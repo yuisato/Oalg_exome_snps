@@ -1,0 +1,67 @@
+#!/bin/bash
+#$ -N bowtie2
+#$ -cwd
+#$ -j y
+#$ -pe smp 8
+#$ -l h_vmem=100G,virtual_free=100G
+#$ -R y
+#$ -S /bin/bash
+#$ -q main.q@@intelhosts
+
+R1file=$1 #results/02_prep/Oalg*_R1_prep.fa.gz ; Must have 'R1_' and gzipped.
+ref_fasta=$2 #results/09b_megan/candidate_Bilateria_nr-megan_hits_Oalg_transcripts.fasta
+outdir=$3 #results/11_corset/
+ref_name=$(basename $ref_fasta | sed 's/.fasta//')
+prefix=$(basename ${R1file} | sed 's/_R1_prep.fa.gz//')
+
+echo "job ID: $JOB_ID"
+hostname
+echo "job started"
+date
+echo " "
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir -p /scratch/tmp.$JOB_ID
+cd /scratch/tmp.$JOB_ID
+cp $R1file read1.fa.gz
+cp $(echo $R1file | sed 's/R1_/R2_/') read2.fa.gz
+echo "PE files copied"
+echo " "
+cp $ref_fasta bowtie2_ref.fasta
+echo "fasta copied"
+echo " "
+
+echo "bowtie2-build started"
+date
+echo " "
+bowtie2-build bowtie2_ref.fasta CDS
+echo " "
+
+echo "bowtie --all started"
+date
+bowtie2 --all -x CDS -S mapped.sam -p $NSLOTS\
+ -f -1 read1.fa.gz -2 read2.fa.gz
+samtools view -S -b mapped.sam > ${ref_name}-${prefix}.bam
+echo " "
+echo "bowtie bam written"
+date
+echo " "
+
+echo "moving result"
+mkdir -p $outdir
+mv ${ref_name}-${prefix}.bam $outdir
+rm -r /scratch/tmp.$JOB_ID/*
+
+echo "job ID: $JOB_ID finished."
+date
+
+mv bowtie2.o$JOB_ID logs
+
