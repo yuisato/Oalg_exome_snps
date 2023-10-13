@@ -1,2 +1,0 @@
-Data: Paired-end Illumina sequences of O. algarvensis metatranscriptome from 12 libraries (6 'oxic' and 6 'anoxic'; see the main document). 
-Input data to be downloaded from ERS13442267-ERS13442278 in the European Nucleotide Archive (ENA) under accession number PRJEB55913.
