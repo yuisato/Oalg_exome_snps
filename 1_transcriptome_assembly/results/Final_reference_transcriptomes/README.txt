@@ -11,18 +11,15 @@ Original transcriptome ammsenbly containing 20229 contigs is;
 
 The original transcriptome was assessed to exclude any contigs that always show high coverage in metagenoems (=repeats/paralogs) or no coverage.
 This assessment was done with qualimap v2.2.1 (locally, default setting) on 30 representative BAM files from; 
- 05_exome_SNPs_Oalg_180115/results/07-10a_mapping/180810/Oalg_verC3
-  --> results are in 01_transcript_Olavius\results\qualimap
-Results of qualimap assessment are analysed with;
- 01_transcript_Olavius\results\qualimap\identify_non_paralogs_final.Rmd
+ 2_exome_snp_analyses/results/07-10a_mapping/Oalg_verC3
 
 This analysis indicated that stable SFS can be obtained using contigs that the mean coverage across the 30 samples is less than 10X, but excludes contigs that have 
  no reads mapped, or that all samples indicated coverages more than 4X at the same time.
  These filtering conditions reasonably identified 17363 contigs that do not attract genetic reads from paralogs or repeat regions, but allowed stocastically high
  coverage in some samples. 
 Transcript contigs that do not get any reads mapped in at least one of 8 populations (R20; random 20 worms per location) were then identified and removed using;
- 05_exome_SNPs_Oalg_180115\18b_thetas_parse_R20.sh
+ 2_exome_snp_analyses\18b_thetas_parse_R20.sh
 The final set of 17242 contigs was listed in;
- 05_exome_SNPs_Oalg_180115\data\ref\Oalg_verC3_non-repeat_cov10_common_contigs.txt
+ 2_exome_snp_analyses\data\ref\Oalg_verC3_non-repeat_cov10_common_contigs.txt
 The region-filter file for ANGSD analyses were made by adding ':' in each line and saved as;
- 05_exome_SNPs_Oalg_180115\data\ref\Oalg_verC3_non-repeat_cov10_common_contigs.rf.txt.
+ 2_exome_snp_analyses\data\ref\Oalg_verC3_non-repeat_cov10_common_contigs.rf.txt .
