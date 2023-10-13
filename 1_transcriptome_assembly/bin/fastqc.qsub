@@ -1,0 +1,49 @@
+#!/bin/bash
+#$ -N fastqc
+#$ -cwd
+#$ -j y
+#$ -pe smp 2
+#$ -R y
+#$ -S /bin/bash
+
+#fastqc.qsub located in bin
+
+infile=$1 #YOURDATA/*fq.gz etc.
+outdir=$2 #results/01fastq/ etc.
+
+echo "job ID: $JOB_ID"
+hostname
+echo "job started"
+date
+echo " "
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir -p /scratch/tmp.$JOB_ID
+cd /scratch/tmp.$JOB_ID
+cp $infile . #file copy to scratch
+echo "file copied"
+date
+echo " "
+
+echo "FastQC started"
+date
+echo " "
+fastqc --threads $NSLOTS $(basename $infile)
+
+echo "moving result"
+mkdir -p $outdir
+mv /scratch/tmp.$JOB_ID/*fastqc* $outdir
+rm -r /scratch/tmp.$JOB_ID/*
+
+echo "job ID: $JOB_ID finished."
+date
+
+

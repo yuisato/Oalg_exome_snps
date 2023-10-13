@@ -1,0 +1,68 @@
+#!/bin/bash
+#$ -N trinity
+#$ -cwd
+#$ -j y
+#$ -pe smp 40
+#$ -R y
+#$ -l h_vmem=300G,virtual_free=200G
+#$ -q '*@@himem'
+#$ -S /bin/bash
+
+indir=$1  #results/04_bbmap/
+outdir=$2  #results/05_trinity
+
+hostname
+date
+echo "job $JOB_ID started"
+echo " "
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir /scratch/$JOB_ID
+cd /scratch/$JOB_ID
+cp ${indir}*_prep.fa.gz .
+echo "files copied"
+echo " "
+
+echo " "
+echo "pooling fasta to R1/R2 pooled.fasta.gz files"
+echo "R1"
+pigz -dc *_R1_prep.fa.gz | pigz -c > trinity_in_pooled_R1.fa.gz
+echo " "
+echo "R2"
+pigz -dc *_R2_prep.fa.gz | pigz -c > trinity_in_pooled_R2.fa.gz
+echo "done"
+date
+echo " "
+
+echo "##########  Trinity started  ##########"
+echo " "
+
+Trinity --seqType fa --max_memory 300G --min_contig_length 600\
+ --left trinity_in_pooled_R1.fa.gz  --right trinity_in_pooled_R2.fa.gz --CPU $NSLOTS
+
+echo " "
+echo "trinity completed"
+date
+echo " "
+
+echo "moving results"
+echo " "
+mkdir -p $outdir
+mv trinity_out_dir/Trinity.fasta $outdir/Trinity.fasta
+mv trinity_out_dir/insilico_read_normalization/*10000.fa $outdir
+rm -r /scratch/tmp.$JOB_ID/*
+TrinityStats.pl $outdir/Trinity.fasta\
+        > $outdir/Trinity.fasta.stats
+
+echo "job $JOB_ID finished."
+date
+
+mv trinity.o$JOB_ID $outdir/Trinity.$JOB_ID.qsub_log
