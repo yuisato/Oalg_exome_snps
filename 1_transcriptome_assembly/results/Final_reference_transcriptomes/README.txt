@@ -18,6 +18,6 @@ This analysis indicated that stable SFS can be obtained using contigs that the m
  These filtering conditions reasonably identified 17363 contigs that do not attract genetic reads from paralogs or repeat regions, but allowed stocastically high
  coverage in some samples. 
 Transcript contigs that do not get any reads mapped in at least one of 8 populations (R20; random 20 worms per location) were then identified and removed. The final set of 17242 contigs was listed in;
- 2_exome_snp_analyses\data\ref\Oalg_verC3_non-repeat_cov10_common_contigs.txt
+ 2_exome_snp_analyses/data/ref/Oalg_verC3_non-repeat_cov10_common_contigs.txt
 The region-filter file for ANGSD analyses were made by adding ':' in each line and saved as;
- 2_exome_snp_analyses\data\ref\Oalg_verC3_non-repeat_cov10_common_contigs.rf.txt .
+ 2_exome_snp_analyses/data/ref/Oalg_verC3_non-repeat_cov10_common_contigs.rf.txt .
