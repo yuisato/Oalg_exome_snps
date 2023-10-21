@@ -1,0 +1,157 @@
+#!/bin/bash
+#$ -N mapping
+#$ -cwd
+#$ -j y
+#$ -pe smp 4
+#$ -R y
+#$ -S /bin/bash
+#$ -l h_vmem=250G,virtual_free=250G
+#$ -q main.q@@intelhosts
+
+#bowtie2.qsub located in bin
+#This script maps clean reads (PE and merged) to reference transcripts, then merges bam files into one after filtering steps.
+#Prerequisite is to have bowtie2 databases already made under the names specified in 07-10a_map_pichard_samtools.sh'.
+#This script is based on Therkildsen&Palumbi (2016). 
+
+sample=$1   #OalgA1CA OalgA1SA etc.
+indir=$2    #results/02-05_clean_reads
+infolist=$3 #data/sample_info_test.list
+refdir=$4   #data/ref
+reflist=$5  #'Oalg_verC3 Oalg_verX' etc.   #This structure was originally established to test multiple reference files.
+outdir=$6   #results/07_map_reads
+pdir=$(pwd)
+
+echo "$sample reads are mapped"
+echo "job ID: $JOB_ID started"
+hostname
+date
+echo
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+echo "copying files..."
+mkdir -p /scratch/tmp.$JOB_ID
+cd /scratch/tmp.$JOB_ID
+cp $indir/$sample*.fastq.gz .
+unpigz $sample*.fastq.gz
+echo "paired and single (merged) read files are unzipped"
+ls -l *
+cp $infolist info.list
+echo
+
+#Extract relevant values from the sample list (sample ID, library ID, and platform unit)
+ # SampleID	LibraryID	PlatformUnit	Haplotype	Location	ReadLength
+SAMPLE_ID=$(grep -P "${sample}\t" info.list | cut -f 1)
+LIB_ID=$(grep -P "${sample}\t" info.list | cut -f 2)
+PU=$(grep -P "${sample}\t" info.list | cut -f 3)
+
+#If multiple reference files are specificed, mapping steps will repeat for different files.
+for reffile in $reflist; do   #Calling name of bt2 referernces
+ cp $refdir/$reffile.*bt2 .   #copy bowtie2-library
+ echo "############### ${reffile} #################"
+ echo "########## bowtie2 started (paired)"
+ bowtie2 -q --phred33 --very-sensitive-local -p $NSLOTS -I 0 -X 1500 --fr\
+  --rg-id $SAMPLE_ID --rg SM:$SAMPLE_ID --rg LB:$LIB_ID --rg PU:$PU --rg PL:ILLUMINA -x $reffile\
+  -1 ${sample}_Paired_NoBacCont_1.fastq -2 ${sample}_Paired_NoBacCont_2.fastq -S ${sample}_Paired_bowtie2_${reffile}.sam
+ echo " Convert sam to bam file for storage"
+ samtools view -bS -F 4 -@ $NSLOTS ${sample}_Paired_bowtie2_${reffile}.sam > ${sample}_Paired_bowtie2_${reffile}.bam
+ rm ${sample}_Paired_bowtie2_${reffile}.sam
+ echo
+ 
+ echo "########## bowtie2 started (single)"
+ bowtie2 -q --phred33 --very-sensitive-local -p $NSLOTS\
+  --rg-id $sample --rg SM:$SAMPLE_ID --rg LB:$LIB_ID --rg PU:$PU --rg PL:ILLUMINA -x $reffile\
+  -U ${sample}_SingleEndQualFiltered_NoBacCont.fastq -S ${sample}_SingleEnd_bowtie2_${reffile}.sam
+ echo " Convert sam to bam file for storage"
+ samtools view -bS -F 4 -@ $NSLOTS ${sample}_SingleEnd_bowtie2_${reffile}.sam > ${sample}_SingleEnd_bowtie2_${reffile}.bam
+  # '-b to BAM-output, -S to auto input-format, -F 4 to exclude any unmapped (FLAGs coantain bit4) reads'
+ rm ${sample}_SingleEnd_bowtie2_${reffile}.sam
+ echo
+ echo "########## bam files filtering and sorting"
+ # Filter bam files to remove poorly mapped reads (non-unique mappings and mappings with a mapping quality score < 20)
+ samtools view -h -q 20 -@ $NSLOTS ${sample}_Paired_bowtie2_${reffile}.bam | grep -v XS:i\
+  | samtools view -buS -@ $NSLOTS - | samtools sort -@ $NSLOTS - > ${sample}_paired_to_${reffile}_MinQ20_sorted.bam
+ samtools view -h -q 20 -@ $NSLOTS ${sample}_SingleEnd_bowtie2_${reffile}.bam | grep -v XS:i\
+  | samtools view -buS -@ $NSLOTS - | samtools sort -@ $NSLOTS - > ${sample}_SingleEnd_to_${reffile}_MinQ20_sorted.bam
+ echo
+ 
+ ## Filter the paired mappings by pairing status (separated these out to count the proportion of mapped pairs falling in each of these categories)
+ # Extracting the concordantly mapped read pairs
+ samtools view -h -b -f 0x002 -@ $NSLOTS ${sample}_paired_to_${reffile}_MinQ20_sorted.bam > ${sample}_paired_to_${reffile}_MinQ20_CP.bam
+ # Extract reads where only one mate mapped (unpaired)
+ samtools view -h -@ $NSLOTS ${sample}_paired_to_${reffile}_MinQ20_sorted.bam | perl -n -e 'print $_ if (/^\@/ || /YT:Z:UP/) '\
+  | samtools view -bS -@ $NSLOTS - > ${sample}_paired_to_${reffile}_MinQ20_AllUP.bam
+ # Could also extract unpaired reads through filtering on the bit flag (samtools view -bu -f 0x008),
+ # but this filtering leaves out those pairs where one mate mapped with poor quality (and therefore got
+ # filtered out so that the mapping was effectively unpaired)
+
+ # Extract discordantly mapped read pairs
+ samtools view -h -@ $NSLOTS ${sample}_paired_to_${reffile}_MinQ20_sorted.bam | perl -n -e 'print $_ if (/^\@/ || /YT:Z:DP/) '\
+  | samtools view -bS -@ $NSLOTS - > ${sample}_paired_to_${reffile}_MinQ20_DiscordantlyMappedPairs.bam
+ # Could also extract discordantly read pairs through filtering on the bit flag
+ # (samtools view -b -F 0x0008 ${sample}_paired_to_${reffile}_MinQ20_sorted.bam | samtools view -b -F 0x002),
+ # but that includes pairs where one mate mapped with poor quality (and therefore got filtered out so that the mapping was effectively unpaired)
+ echo
+ 
+ echo "########## Clipping overlaps"
+ # Closer examination of the ${sample}_paired_To_NR_Trans_MinQ20_CP.bam revealed that there were a non-negligible number of
+ # concordantly mapped read pairs for which the mapped ends overlapped (i.e. they had not been merged by flash).
+ # To avoid double-counting these overlapping sections in SNP calling and genotype likelihood estimation, we used clipOverlap
+ # to soft-clip overlapping read ends (maintaining only the read with the highest quality score in overlapping regions).
+ bam clipOverlap --in ${sample}_paired_to_${reffile}_MinQ20_CP.bam\
+  --out ${sample}_paired_to_${reffile}_MinQ20_CP_Clipped.bam\
+  --storeOrig OC --stats --unmapped
+ # Remove the reads that became unmapped in the clipping
+ samtools view -hb -F 4 -@ $NSLOTS ${sample}_paired_to_${reffile}_MinQ20_CP_Clipped.bam\
+  > ${sample}_paired_to_${reffile}_MinQ20_CP_Clipped_MappedOnly.bam
+ echo
+ 
+ echo "########## bam files merging"
+ # Merge the bam files to create a single bam file for each sample with all the reads to use for downstream analysis
+ # (the overlap-clipped concordantly mapped reads, the unpaired mapped reads (where only one end of the pair mapped to
+ # the transcriptome reference), and the single-end/orphaned mapped reads (the merged pairs and reads for which the other
+ # mate in the pair had been lost during the quality filtering)). We did not include discordantly mapped pairs in any downstream analysis.
+ samtools merge -f -@ $NSLOTS ${sample}_to_${reffile}_MinQ20_PairedAndSingle.bam\
+  ${sample}_paired_to_${reffile}_MinQ20_CP_Clipped_MappedOnly.bam\
+  ${sample}_paired_to_${reffile}_MinQ20_AllUP.bam\
+  ${sample}_SingleEnd_to_${reffile}_MinQ20_sorted.bam
+ echo
+
+ #Deduplication with picard
+ echo "########## picard started"
+ java -Xmx60g -jar YOURTOOLS/picard.jar MarkDuplicates I=${sample}_to_${reffile}_MinQ20_PairedAndSingle.bam\
+ O=${sample}_to_${reffile}_MinQ20_PairedAndSingle_dedup.bam M=${sample}_to_${reffile}_MinQ20_PairedAndSingle_dupstat.txt\
+ VALIDATION_STRINGENCY=SILENT REMOVE_DUPLICATES=true
+ echo "picard complete on $reffile"
+ rm ${sample}_to_${reffile}_MinQ20_PairedAndSingle.bam
+ echo
+
+ echo "##### samtool sorting and indexing"
+ samtools sort -o ${sample}_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam ${sample}_to_${reffile}_MinQ20_PairedAndSingle_dedup.bam -@ $NSLOTS
+ samtools index ${sample}_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam -b
+ echo "done"
+ ls -l *
+ echo
+
+ echo "##### moving sorted bam and index files to $outdir/$reffile"
+ mkdir -p $outdir/$reffile
+ pigz ${sample}_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam*
+ mv ${sample}_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam*.gz $outdir/$reffile
+ echo "done"
+ date
+ echo
+ echo
+done
+
+rm -r /scratch/tmp.$JOB_ID/*
+echo "job ID: $JOB_ID finished."
+
+mkdir -p $outdir/logs
+mv $pdir/$JOB_NAME.o$JOB_ID  $outdir/logs/$sample.log

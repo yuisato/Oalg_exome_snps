@@ -1,0 +1,132 @@
+#!/bin/bash
+#$ -N gatk_dep
+#$ -cwd
+#$ -j y
+#$ -pe smp 64
+#$ -R y
+#$ -S /bin/bash
+#$ -l h_vmem=300G,virtual_free=300G
+#$ -q main.q@@intelhosts
+
+#gatk_indel_angsd_depth.qsub located in bin
+#This script takes sorted bam files and reference file and realigns around intron/exon boundaries for better SNP detection,
+# followed by depth-identification by ANGSD for fiding out depth parameters in the next step.
+#Samples included are listed in $2 sampleinfo.
+
+reffile=$1 #Oalg_verC3 etc.
+sampleinfo=$2 #data/sample_info_180810_310_Oalg.list etc.
+bamdir=$3 #results/07-10a_mapping/180810 etc.
+outdir=$4 #results/10b-11_indel_angsd_depth/180810_Oalg etc.
+pdir=$(pwd)
+maxdepth=$5 #3200 etc. (~#sample x 10)
+
+echo "job ID: $JOB_ID started"
+hostname
+date
+echo
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir -p /scratch/tmp.$JOB_ID
+cd /scratch/tmp.$JOB_ID
+echo "##### reference files copying"
+cp data/ref/$(echo $reffile | sed 's/Oalg/Oalg_transcripts/')*_hits.fasta $reffile.fasta
+echo
+
+echo "############### ${reffile} #################"
+echo "##### copying all sorted bam and index files, unzipping them, and making a list of samples included"
+echo "Sample list: $sampleinfo"
+echo "Source: $bamdir/$reffile"
+for sample in $(cat $sampleinfo | cut -f1); do
+ echo $sample
+ cp $bamdir/$reffile/${sample}_*bam.gz .
+done
+unpigz *bam.gz
+echo
+
+for sample in $(cat $sampleinfo | cut -f1); do
+ cp $bamdir/$reffile/${sample}_*bai.gz .
+done
+unpigz *bai.gz
+
+ls *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam | grep "Oalg" > Samples_To_${reffile}_dedup_sorted_bam.list
+echo "done"
+echo
+
+echo "##### indexing reference file and make dictionary file"
+samtools faidx $reffile.fasta
+java -Xmx200g -jar YOURTOOLS/picard.jar CreateSequenceDictionary \
+ R=${reffile}.fasta O=${reffile}.dict
+echo "done"
+echo
+
+echo "##### gatk identifiying target intervals"
+java -Xmx200g -jar YOURTOOLS/GenomeAnalysisTK.jar \
+  -T RealignerTargetCreator \
+  -R $reffile.fasta \
+  -I Samples_To_${reffile}_dedup_sorted_bam.list \
+  -o ${reffile}_indel.intervals \
+  -drf BadMate \
+  -nt $NSLOTS
+echo "done"
+echo
+
+echo "##### gatk re-aligning around indels"
+java -Xmx200g -jar YOURTOOLS/GenomeAnalysisTK.jar \
+   -T IndelRealigner \
+   -R $reffile.fasta \
+   -I Samples_To_${reffile}_dedup_sorted_bam.list \
+   -targetIntervals ${reffile}_indel.intervals \
+   --consensusDeterminationModel USE_READS \
+   --nWayOut _realigned.bam
+echo "done"
+echo
+
+echo "##### copying results of indel-align"
+echo "Target: $outdir/$reffile"
+mkdir -p $outdir/$reffile
+rm *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted.bam.bai
+for bamfile in *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted_realigned.bam; do pigz -c $bamfile > $bamfile.gz; done
+for baifile in *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted_realigned.bai; do pigz -c $baifile > $baifile.gz; done
+mv *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted_realigned.bam.gz\
+ *_to_${reffile}_MinQ20_PairedAndSingle_dedup_sorted_realigned.bai.gz $outdir/$reffile
+echo
+
+echo "##### starting to calculate reference mapping depth with ANGSD"
+ls *realigned.bam > bam_list.txt
+n_ind=$(cat bam_list.txt | wc -l)          #Calculate the number of individual samples
+echo "BAM list containing $n_ind samples is made"
+echo
+echo "ANGSD starting to check the mapping depth profile..."
+date
+samtools faidx $reffile.fasta
+angsd-0.921 -P $NSLOTS -b bam_list.txt -out ${n_ind}Samples_to_${reffile}_MinQ20_qc -ref $reffile.fasta\
+ -minQ 2 -trim 0 -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 -doQsDist 1 -doDepth 1 -doCounts 1 -maxDepth $maxdepth
+Rscript YOURTOOLS/ngsTools/Scripts/plotQC.R ${n_ind}Samples_to_${reffile}_MinQ20_qc 2> /dev/null
+ # Use -only_proper_pairs 0 to also retain reads for which only one end of a pair is mapped (because mapping to a transcriptome, not the whole genome)
+ # Remove_bads 0 and -uniqueOnly 0 as they were already filtered from the bam files for poorly mapped reads.
+
+echo "ANGSD complete"
+echo date
+echo
+
+echo "########## moving result to:"
+echo " $outdir/$reffile"
+rm *_MinQ20_PairedAndSingle_dedup_sorted_realigned.ba? bam_list.txt *fasta* *bam.list *qc.qs *intervals *dict   #(optional) remove intermediate files not used later.
+mv * $outdir/$reffile
+rm -r /scratch/tmp.$JOB_ID
+echo
+echo
+
+echo "job ID: $JOB_ID finished."
+date
+sleep 30
+
+mv $pdir/$JOB_NAME.o$JOB_ID $outdir/$reffile/gatk_indel_angsd_depth.log

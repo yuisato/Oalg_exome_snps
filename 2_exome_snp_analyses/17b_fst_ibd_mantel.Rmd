@@ -1,0 +1,89 @@
+---
+title: "17b_fst_ibd_mantel"
+author: "YSA"
+---
+
+```{r}
+#FST based on SNP-site SFSs (with region-file filtering, GL2, minInd50%)
+#Setting the working directory
+setwd("results/17_sfs_fst_pbs_region-filter_minInd50_snp/R_IBD_Mantel_tests")
+#Matrices of FST, initialized FST (=FST/(1-FST)), geographic distances are placed in the working directory.
+# e.g.
+# RawFST_matrix_for_heatmap.txt
+# 	VITA	SORG	SANT	POMT	CAVL	CLDF	ZUCC	MAGL
+# VITA	0	0.033	0.041	0.051	0.058	0.085	0.085	0.591
+# SORG	0.033	0	0.022	0.034	0.041	0.068	0.068	0.584
+# SANT	0.041	0.022	0	0.006	0.020	0.049	0.050	0.582
+# POMT	0.051	0.034	0.006	0	0.018	0.054	0.055	0.583
+# CAVL	0.058	0.041	0.020	0.018	0	0.027	0.029	0.580
+# CLDF	0.085	0.068	0.049	0.054	0.027	0	0.037	0.592
+# ZUCC	0.085	0.068	0.050	0.055	0.029	0.037	0	0.591
+# MAGL	0.591	0.584	0.582	0.583	0.580	0.592	0.591	0
+
+#fst.norm.elba.txt
+# 	VITA	SORG	SANT	POMT	CAVL	CLDF
+# SORG	0.0342					
+# SANT	0.0430	0.0229				
+# POMT	0.0534	0.0348	0.0062			
+# CAVL	0.0615	0.0432	0.0208	0.0187		
+# CLDF	0.0929	0.0725	0.0511	0.0576	0.0276	
+# ZUCC	0.0927	0.0725	0.0523	0.0580	0.0301	0.0388
+
+# geo.e-barrier.elba.txt
+# 	VIT	SOR	SAN	POM	CAV	CDF
+# SOR	12.59					
+# SAN	23.72	11.64				
+# POM	44.79	21.07	9.43			
+# CAV	39.5	27.42	15.78	6.35		
+# CDF	46.65	34.56	22.91	13.48	7.53	
+# ZUC	53.74	41.61	30	20.57	14.58	7.07
+
+#packages
+library(vegan)
+library(ade4)
+library(pheatmap)
+
+#Import data
+#Raw FST data and draw a heatmap
+rawfst <- as.matrix(read.table(file="RawFST_matrix_for_heatmap.txt", sep="\t", header=T, row.names = 1))
+colnames(rawfst) <- rownames(rawfst)
+pheatmap(rawfst,cluster_rows = F, cluster_cols = F, color = colorRampPalette(c("white", "blue","green", "yellow", "firebrick3"))(50))
+
+#FST data below are transformed as (FST/(1-FST)), and linear ocean distance data are used.
+#FST dist matrix for ALL locations
+fstall <- as.dist(read.table("fst.norm.allloc.txt", sep="\t", header = T, row.names = 1))
+#FST dist matrix for ELBA locations
+fstelba <- as.dist(read.table("fst.norm.elba.txt", sep="\t", header = T, row.names = 1))
+#Geographic dist matrix for ELBA locations WITHOUT E-Elba barrier (current)
+geoelba <- as.dist(read.table("geo.no-barrier.elba.txt", sep="\t", header = T, row.names = 1))
+#Geographic dist matrix for ELBA locations with E-Elba barrier
+geoelbabar <- as.dist(read.table("geo.e-barrier.elba.txt", sep="\t", header = T, row.names = 1))
+#Geographic dist matrix for ALL locations (current)
+geoall <- as.dist(read.table("geo.no-barrier.allloc.txt", sep="\t", header = T, row.names = 1))
+
+#Perform Mantel tests
+ #FST vs. geographic distance in W Med (current)
+  mantel(fstall,geoall)
+ #FST vs. geographic distance in Elba without E-barrier (current)
+  mantel(fstelba,geoelba)
+ #FST vs. geographic distance in Elba with E-barrier
+  mantel(fstelba,geoelbabar)
+
+#Using mantel.randtest in ade4 package (done for double-checking consistency and plotting)
+  #FST vs. geographic distance in W Med (current)
+  mantel.randtest(fstall,geoall); plot(mantel.randtest(fstall,geoall))
+ #FST vs. geographic distance in Elba without E-barrier (current)
+  mantel.randtest(fstelba,geoelba); plot(mantel.randtest(fstelba,geoelba))
+ #FST vs. geographic distance in Elba with E-barrier
+  mantel.randtest(fstelba,geoelbabar); plot(mantel.randtest(fstelba,geoelbabar))
+```
+
+
+
+
+
+
+
+
+
+

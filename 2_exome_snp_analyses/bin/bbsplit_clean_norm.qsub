@@ -1,0 +1,210 @@
+#!/bin/bash
+#$ -N seqprep
+#$ -cwd
+#$ -j y
+#$ -pe smp 16
+#$ -R y
+#$ -S /bin/bash
+#$ -l h_vmem=190G,virtual_free=190G
+#$ -q main.q@@intelhosts
+
+#bbsplit_norm_clean.qsub located in bin/
+#This script takes raw paired fq.gz files and does de-duplication (fastuniq), adapter-clipping (trimmomatic)
+#filtering out Oalg symbionts and mito DNA (bbsplit), QC-triming (trimmomatic), pair-read merging (flash), and decontamination (bowtie2).
+#Scripts were partially based on Therkildsen&Palumbi (2016).
+
+sample=$1 #OalgSANT_A01 etc.
+outdir=$2 #results/02-05_clean_reads etc.
+target_size=1800000000 # = 1.8 Gbases etc. Upper file size cap to avoid biassed noise. 
+pdir=$(pwd)
+
+echo "# job ID: $JOB_ID started"
+hostname
+date
+echo
+echo "$sample processed."
+echo "Sample-size target is $(awk -v tar=$target_size "BEGIN {printf \"%.1f\n\", tar / 1000000000}") Gbases of host nuc-DNA reads."
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+#Copy files
+echo "########## file copy to /scratch"
+mkdir -p /scratch/tmp.$JOB_ID
+cd /scratch/tmp.$JOB_ID
+cp data/${sample}_*.fq.gz .
+unpigz ${sample}*.fq.gz
+echo "# PE files copied, unzipped"
+ls * -l
+echo
+
+#Deduplication
+echo "########## fastuniq-deduplicating..."
+ls ${sample}*.fq > seqfile.list     #make an input-file list for fastuniq
+fastuniq -i seqfile.list -t q -o ${sample}_FastUniq_1.fastq -p ${sample}_FastUniq_2.fastq -c 0
+rm -f  seqfile.list ${sample}*.fq
+echo "# fastuniq complete"
+ls -l *
+echo
+
+echo "########## Adapter-clipping by trimmomatic..."
+#Adapter-clipping
+java -jar YOURTOOLS/Trimmomatic-0.36/trimmomatic-0.36.jar PE -threads $NSLOTS -phred33\
+ ${sample}_FastUniq_1.fastq ${sample}_FastUniq_2.fastq\
+ ${sample}_AdapterClipped_forward_paired.fastq ${sample}_AdapterClipped_forward_unpaired.fastq\
+ ${sample}_AdapterClipped_reverse_paired.fastq ${sample}_AdapterClipped_reverse_unpaired.fastq\
+ ILLUMINACLIP:YOURTOOLS/bbmap/resources/adapters.fa:2:30:10:4:true
+ # This specifies; seed mitmatch=2; palindrome clip threshold=30; simple clip threshold=10; min adapter length=4.
+rm -f ${sample}_AdapterClipped_forward_unpaired.fastq ${sample}_AdapterClipped_reverse_unpaired.fastq
+ls -l *
+echo
+
+#BBsplit into Oalg symbionts, mitochondria, and the rest containing host nucDNA reads.
+echo "########## BBsplit to Symb, Mito, and other(clean)"
+echo "# ref file copying"
+cp ../1_transcriptome_assembly/data/ref/symbiont_genomes_2017_7.fasta ./symbiont_genomes.fasta
+cp data/ref/Oalg_mito_refs.fasta ./mitochondria.fasta
+gunzip -c YOURTOOLS/bbmap/resources/phix174_ill.ref.fa.gz > phix.fasta
+
+echo "bbsplit processing..."
+bbsplit.sh in1=${sample}_AdapterClipped_forward_paired.fastq in2=${sample}_AdapterClipped_reverse_paired.fastq\
+ ref=symbiont_genomes.fasta,mitochondria.fasta,phix.fasta basename=bbsplit_%_${sample}_#.fq\
+ outu1=paired_clean1.fastq outu2=paired_clean2.fastq threads=$NSLOTS nodisk
+rm -f ${sample}_AdapterClipped_forward_paired.fastq ${sample}_AdapterClipped_reverse_paired.fastq
+echo
+ls -l bbsplit_*fq paired_clean?.fastq
+rm bbsplit_phix*.fq
+pigz  bbsplit_*fq
+echo
+
+echo "########## QC-trimming by trimmomatic..."
+#QC-trimming
+java -jar YOURTOOLS/Trimmomatic-0.36/trimmomatic-0.36.jar PE -threads $NSLOTS -phred33\
+ paired_clean1.fastq paired_clean2.fastq\
+ ${sample}_AdapterClipped_QualFiltered_forward_paired.fastq ${sample}_AdapterClipped_QualFiltered_forward_unpaired.fastq\
+ ${sample}_AdapterClipped_QualFiltered_reverse_paired.fastq ${sample}_AdapterClipped_QualFiltered_reverse_unpaired.fastq\
+ LEADING:10 SLIDINGWINDOW:4:2 MINLEN:50  #first 10-bases off if below q-threshold, window of 4 bases to check quality >2, shorter than 50 to dump.
+rm -f paired_clean1.fastq paired_clean2.fastq
+echo "# trimmomatic complete"
+ls -l *
+echo
+
+echo "########## read-merging (flash) started"
+flash -M 110 ${sample}_AdapterClipped_QualFiltered_forward_paired.fastq ${sample}_AdapterClipped_QualFiltered_reverse_paired.fastq\
+ --output-prefix $sample -t $NSLOTS
+rm -f ${sample}_AdapterClipped_QualFiltered_forward_paired.fastq ${sample}_AdapterClipped_QualFiltered_reverse_paired.fastq
+echo "# flash complete"
+ls -l *
+echo
+
+#Merge orphaned reads from trimming and flash-combined (extended) reads together as all single-end reads.
+echo "rescuing QC-orphaned reads into flash-merged reads..."
+cat ${sample}.extendedFrags.fastq\
+ ${sample}_AdapterClipped_QualFiltered_forward_unpaired.fastq\
+ ${sample}_AdapterClipped_QualFiltered_reverse_unpaired.fastq > ${sample}_SingleEndQualFiltered.fastq
+rm -f ${sample}.extendedFrags.fastq\
+ ${sample}_AdapterClipped_QualFiltered_forward_unpaired.fastq\
+ ${sample}_AdapterClipped_QualFiltered_reverse_unpaired.fastq
+ls -l *
+echo
+
+#Decontamination for paired data
+echo "########## decontaminaiton (bowtie2) start"
+echo "# processing paired data"
+for btdb in virus human ribo bacteria_part_a bacteria_part_b bacteria_part_c\
+            bacteria_part_refseq_a bacteria_part_refseq_b bacteria_part_refseq_c; do
+ echo "  checking $btdb..."
+ # Corresponding bowtie2 databases were made in advance in data/ref based on;
+ #"virus" - Viral genomes (https://www.ncbi.nlm.nih.gov/genomes/GenomesGroup.cgi?taxid=10239; Retrieve sequences: RefSeq nucleotides)
+ #"human" - Human genome (ftp://ftp.ensembl.org/pub/release-82/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna_rm.toplevel.fa.gz)
+ #"ribo" - rRNA collection (sortmeRNA database: rRNA_rfam_silva.fa.gz; Provided in ../1_transcriptome_assembly/data/ref/)
+ #"bacteria*" -   Bacterial genomes (https://www.ncbi.nlm.nih.gov/assembly ;  
+ #    [‘bacteria’ ‘latest genbank’ ‘complete genome’] + [‘bacteria’ ‘representative refseq’ ‘all levels’)]
+ date
+ cp data/ref/$btdb.*bt2*gz .
+ unpigz $btdb.*bt2*gz
+ bowtie2 -q --phred33 --sensitive -I 0 -X 1000 --fr -x $btdb -p $NSLOTS\
+  -1 ${sample}.notCombined_1.fastq -2 ${sample}.notCombined_2.fastq -S ${sample}_Paired_bowtie2_$btdb.sam
+ samtools view -S -F 4 ${sample}_Paired_bowtie2_$btdb.sam | cut -f 1 | uniq > ${sample}_Paired_bowtie2_${btdb}_RemoveList.txt #making a removal list
+ rm ${sample}_Paired_bowtie2_$btdb.sam
+ echo
+done
+cat ${sample}_Paired_bowtie2_*_RemoveList.txt | sort | uniq > ${sample}_Paired_Complete_RemoveList.txt #Combine removal list
+echo "  read cleaning..."
+bin/RemoveSequencesFromFastq.py \
+ ${sample}.notCombined_1.fastq ${sample}_Paired_Complete_RemoveList.txt ${sample}_Paired_NoBacContAll_1.fastq
+bin/RemoveSequencesFromFastq.py \
+ ${sample}.notCombined_2.fastq ${sample}_Paired_Complete_RemoveList.txt ${sample}_Paired_NoBacContAll_2.fastq
+echo "  done"
+echo
+rm -f ${sample}.notCombined_?.fastq
+
+#Decontamination for single-end data
+echo "# processing single-end data"
+for btdb in virus human ribo bacteria_part_a bacteria_part_b bacteria_part_c\
+            bacteria_part_refseq_a bacteria_part_refseq_b bacteria_part_refseq_c; do
+ echo "  checking $btdb..."
+ date
+ bowtie2 -q --phred33 --sensitive -x $btdb -p $NSLOTS\
+  -U ${sample}_SingleEndQualFiltered.fastq -S ${sample}_SingleEndQualFiltered_bowtie2_$btdb.sam
+ samtools view -S -F 4 ${sample}_SingleEndQualFiltered_bowtie2_$btdb.sam | cut -f 1 | uniq\
+  > ${sample}_SingleEndQualFiltered_bowtie2_${btdb}_RemoveList.txt   #making a removal list
+ rm ${sample}_SingleEndQualFiltered_bowtie2_$btdb.sam $btdb.*bt2*
+ echo
+done
+cat ${sample}_SingleEndQualFiltered_bowtie2_*_RemoveList.txt | sort | uniq \
+ > ${sample}_SingleEndQualFiltered_Complete_RemoveList.txt #Combine removal list
+echo "  read cleaning..."
+bin/RemoveSequencesFromFastq.py\
+ ${sample}_SingleEndQualFiltered.fastq ${sample}_SingleEndQualFiltered_Complete_RemoveList.txt ${sample}_SingleEndQualFiltered_NoBacContAll.fastq
+echo "# decontamination complete"
+date
+ls -l *NoBacCont*fastq
+echo
+rm -f ${sample}_SingleEndQualFiltered.fastq
+
+#Read base normalization of decontaminated reads
+echo "########## Normalizing all host nucDNA reads to $(awk -v tar=$target_size "BEGIN {printf \"%.1f\n\", tar / 1000000000}") Gbases"
+echo "Paired files: ${sample}_Paired_NoBacContAll_1.fastq ${sample}_Paired_NoBacContAll_2.fastq"
+echo "Single file:  ${sample}_SingleEndQualFiltered_NoBacContAll.fastq"
+
+echo "calculating sample-base targets..."
+p_base=$(cat ${sample}_Paired_NoBacContAll_?.fastq | paste - - - - | cut -f2 | tr -d '\n' | wc -c); echo "$p_base bases in paired files"
+s_base=$(cat ${sample}_SingleEndQualFiltered_NoBacContAll.fastq | paste - - - - | cut -f2 | tr -d '\n' | wc -c); echo "$s_base bases in single file"
+tot_base=$(awk -v s=$s_base -v p=$p_base "BEGIN {print s + p}"); echo "total $tot_base bases"
+paired_target=$(awk -v tot=$tot_base -v p=$p_base -v tar=$target_size "BEGIN {printf \"%.2f\n\", p * tar / tot / 1000000000}")
+single_target=$(awk -v tot=$tot_base -v s=$s_base -v tar=$target_size "BEGIN {printf \"%.2f\n\", s * tar / tot / 1000000000}")
+echo "target bases for paried reads: $paired_target Gbases"
+echo "target bases for single reads: $single_target Gbases"
+echo
+echo "sampling reads..."   #This utilises 'reformat.sh' from bbmap tools.
+echo "paired"
+reformat.sh in=${sample}_Paired_NoBacContAll_1.fastq in2=${sample}_Paired_NoBacContAll_2.fastq\
+ out=${sample}_Paired_NoBacCont_1.fastq out2=${sample}_Paired_NoBacCont_2.fastq samplebasestarget=${paired_target}g sampleseed=1
+echo "single"
+reformat.sh in=${sample}_SingleEndQualFiltered_NoBacContAll.fastq\
+ out=${sample}_SingleEndQualFiltered_NoBacCont.fastq samplebasestarget=${single_target}g sampleseed=1
+rm -f ${sample}_Paired_NoBacContAll_1.fastq ${sample}_Paired_NoBacContAll_2.fastq ${sample}_SingleEndQualFiltered_NoBacContAll.fastq
+echo "Normalization (capping) complete"
+echo
+
+echo "########## all processes complete"
+echo "final read files:"
+ls -l *NoBacCont*fastq
+echo "# compressing and moving results"
+mkdir -p $outdir/logs
+pigz ${sample}_Paired_NoBacCont_1.fastq ${sample}_Paired_NoBacCont_2.fastq ${sample}_SingleEndQualFiltered_NoBacCont.fastq
+mv *fastq.gz $outdir 		#final clean reads are moved.
+mv bbsplit_*fq.gz $outdir 	#bbsplit reads for symbionts and mitochondria are also moved. Symbiont reads were kept for another study (optional).
+rm -r /scratch/tmp.$JOB_ID/*    #delete all remaining files in tmp folder.
+echo "# log written in $outdir/logs"
+echo 
+echo "# job ID: $JOB_ID finished."
+date
+mv $pdir/$JOB_NAME.o$JOB_ID $outdir/logs/$sample.log

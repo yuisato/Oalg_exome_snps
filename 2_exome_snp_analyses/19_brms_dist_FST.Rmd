@@ -1,0 +1,1099 @@
+---
+title: "Bayesian modling on FST-Distance matrices"
+author: "Yui Sato"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE,cache.lazy = FALSE, tidy='styler')
+```
+
+```{r libraries, results='markdown', eval=TRUE}
+# install.packages("devtools")
+# devtools::install_github("jmgirard/standist")
+# install.packages("tidyverse")
+
+setwd("results/17_sfs_fst_pbs_region-filter_minInd50_snp/R_bayes")
+
+#Input matrices are placed in the working directory.
+# dist_FSTnorm_ELBA.csv
+# location-pair,distance,FSTnorm
+# SORG_VITA,12.59,0.034170011
+# SANT_VITA,23.72,0.043031299
+# POMT_VITA,44.79,0.053436626
+# CAVL_VITA,39.5,0.061475345
+# CLDF_VITA,46.65,0.092926036
+# ZUCC_VITA,53.74,0.092668088
+# SANT_SORG,11.64,0.022876636
+# POMT_SORG,21.07,0.034838886
+# CAVL_SORG,27.42,0.043239132
+# CLDF_SORG,34.56,0.072545934
+# ZUCC_SORG,41.61,0.072512575
+# POMT_SANT,9.43,0.006227542
+# CAVL_SANT,15.78,0.020840458
+# CLDF_SANT,22.91,0.051053892
+# ZUCC_SANT,30,0.052321421
+# CAVL_POMT,6.35,0.018739717
+# CLDF_POMT,13.48,0.057635867
+# ZUCC_POMT,20.57,0.057959239
+# CLDF_CAVL,7.53,0.027567583
+# ZUCC_CAVL,14.58,0.030113302
+# ZUCC_CLDF,7.07,0.03877325
+
+# dist_FSTnorm_ALL.csv
+# location-pair,distance,FSTnorm
+# SORG_VITA,12.59,0.034170011
+# SANT_VITA,23.72,0.043031299
+# POMT_VITA,44.79,0.053436626
+# CAVL_VITA,39.5,0.061475345
+# CLDF_VITA,46.65,0.092926036
+# ZUCC_VITA,53.74,0.092668088
+# SANT_SORG,11.64,0.022876636
+# POMT_SORG,21.07,0.034838886
+# CAVL_SORG,27.42,0.043239132
+# CLDF_SORG,34.56,0.072545934
+# ZUCC_SORG,41.61,0.072512575
+# POMT_SANT,9.43,0.006227542
+# CAVL_SANT,15.78,0.020840458
+# CLDF_SANT,22.91,0.051053892
+# ZUCC_SANT,30,0.052321421
+# CAVL_POMT,6.35,0.018739717
+# CLDF_POMT,13.48,0.057635867
+# ZUCC_POMT,20.57,0.057959239
+# CLDF_CAVL,7.53,0.027567583
+# ZUCC_CAVL,14.58,0.030113302
+# ZUCC_CLDF,7.07,0.03877325
+# MAGL_VITA,816.25,1.447842594
+# MAGL_SORG,806.58,1.403742146
+# MAGL_SANT,796.57,1.394853938
+# MAGL_POMT,797.92,1.396455164
+# MAGL_CAVL,804.27,1.378273991
+# MAGL_CLDF,811.8,1.448981591
+# MAGL_ZUCC,818.87,1.442479605
+
+
+# library(rstanarm)   #for fitting models in STAN
+library(brms)       #for fitting models in STAN
+library(standist)   #for exploring distributions
+library(coda)       #for diagnostics
+library(bayesplot)  #for diagnostics
+library(ggmcmc)     #for MCMC diagnostics
+library(DHARMa)     #for residual diagnostics
+library(rstan)      #for interfacing with STAN
+library(emmeans)    #for marginal means etc
+library(broom)      #for tidying outputs
+library(tidybayes)  #for more tidying outputs
+library(HDInterval) #for HPD intervals
+library(ggeffects)  #for partial plots
+#library(tidyverse)  #for data wrangling etc
+  library(dplyr)
+  library(ggplot2)
+  library(readr)      #for read.CSV
+  library(stringr)
+  library(rstanarm)
+library(broom.mixed)#for summarising models
+library(posterior)  #for posterior draws
+library(ggeffects)  #for partial effects plots
+library(patchwork)  #for multi-panel figures
+library(styler)
+theme_set(theme_grey()) #put the default ggplot theme back
+source('helperFunctions.R')   #custom R codes for plotting priors and posteriors
+```
+
+# Background
+Based on populaiton-scale samples from 7 locations within a 30-km long
+island of Elba (panel d), we found a fine scale population-structuring
+based on genome-wide SNPs. Genetic distances between pairwise
+populations (FST normalized) and geographic distance (km) showed an
+Isolation-by-Distance pattern. Adding one more distant location in
+Mallorca (Magaluf, panel c), We found this pattern still significant.
+Now we want to test if the slopes between Distance and FST are the same
+in the correlations (1) within Elba, and (2) between Elba and Mallorca.
+We refer them as 'local' and 'regional' scales.
+
+
+# Reading the data in
+```{r readData}
+local <- read_csv('dist_FSTnorm_ELBA.csv', trim_ws = TRUE)
+glimpse(local)
+
+alldata <- read_csv('dist_FSTnorm_ALL.csv', trim_ws = TRUE)   
+glimpse(alldata)
+```
+
+# Exploratory data analysis
+
+```{r}
+#Check the variant distribution by scatter plot
+ggplot(data = local, aes(y = FSTnorm, x = distance)) +
+  geom_point() +
+  geom_smooth(method = 'lm')  #using linear model
+
+ggplot(data = alldata, aes(y = FSTnorm, x = distance)) +
+  geom_point() +
+  geom_smooth(method = 'lm')  #using linear model
+```
+
+# Fit the model
+
+Model formula: 
+$$
+\begin{align}
+y_i &\sim{} \mathcal{N}(\mu_i, \sigma^2)\\
+\mu_i &= \beta_0 + \beta_1 x_i\\
+\end{align}
+$$
+
+## Local data first (7 populations in Elba)
+```{r}
+#default priors
+local.brm <- brm(bf(FSTnorm ~ distance),
+                data = local,
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+local.brm %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+```{r}
+prior_summary(local.brm)
+```
+
+Set priors to capture the data. the beta is now flat prior (-INF \~
+INF), so set it as Normal(0,10) as well. Check the feasibility of priors
+by sampling priors from their distributions.
+
+```{r}
+#set priors
+local.brm1 <- brm(bf(FSTnorm ~ distance),
+                data = local,
+                prior = prior(normal(0,10), class = 'b'),
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+#sample prior only to check the range of search we are doing.
+
+local.brm1 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+This will not be very useful as the slope goes way up and down from the
+wide range. Set better priors..
+
+```{r}
+var(local$FSTnorm)
+sd(local$distance)
+```
+
+```{r}
+#set new priors
+priors <- prior(normal(0,0.05), class='Intercept')+
+  prior(normal(0,0.05), class='b') +
+  prior(gamma(2,0.1), class='sigma')
+
+local.brm2 <- brm(bf(FSTnorm ~ distance),
+                data = local,
+                prior = priors,
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+local.brm2 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+This is more realistic. Data are sitting within the CI more
+closely with enough wiggle room.
+
+Now sample from priors and posteriors.
+
+```{r}
+priors <- prior(normal(0,0.05), class='Intercept')+
+  prior(normal(0,0.05), class='b') +
+  prior(gamma(2,0.1), class='sigma')
+
+local.brm3 <- brm(bf(FSTnorm ~ distance),
+                data = local,
+                prior = priors,
+                sample_prior = 'yes',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+local.brm3 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+Now check the priors are not the same as posteriors; so that the prior
+did not drive the posterior.
+
+```{r}
+local.brm3 %>% SUYR_prior_and_posterior()   #custom visualization in 'helperFunctions.R' (by Murray Rogan)
+```
+
+They show that data were the main driver for posterior probs.
+
+### MCMC sampling diagnostics 
+
+Check chain mixing.
+
+```{r}
+local.brm3$fit %>% stan_trace()
+```
+
+Top 3 parameters are well converged among chains. All well mixed. check
+the burn-in as well:
+
+```{r}
+local.brm3$fit %>% stan_trace(inc_warmup = TRUE) 
+```
+
+Burn-in was far more than enough before converging.
+
+To check auto-correlations between draws to assess thinning:
+
+```{r}
+local.brm3$fit %>% stan_ac()
+```
+
+Okay so thin = 5 was good.
+
+To further check chain convergence.
+
+```{r}
+local.brm3$fit %>% stan_rhat
+```
+
+higher values (\>1.05) are problematic. So these look in order.
+
+```{r}
+local.brm3$fit %>% stan_ess()
+```
+
+Make sure the sample size and effective size are close to each other;
+otherwise priors may have problems.
+
+
+### Model validation 
+
+```{r}
+local.brm3 %>% pp_check(type='dens_overlay', ndraws = 200)
+```
+
+The sample appears to represent the population.
+
+```{r}
+local.brm3 %>% pp_check(type='error_scatter_avg')
+local.brm3 %>% pp_check(type='intervals', x = 'distance')
+```
+
+Now to check DARHMa residuals:
+
+```{r}
+preds <- local.brm3 %>% posterior_predict(ndraws=250, summary=FALSE)
+local.resids <- createDHARMa(simulatedResponse = t(preds), 
+                            observedResponse = local$FSTnorm,
+                            fittedPredictedResponse = apply(preds, 2, median),
+                            integerResponse = FALSE)
+local.resids %>% plot()
+```
+
+No problems found.
+
+### Partial effects plots 
+
+```{r}
+local.brm3 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+### Model investigation 
+
+```{r}
+#local.brm3 %>% summary()
+print(local.brm3, digits=10)
+```
+
+```{r}
+local.mcmc <- local.brm3 %>% as_draws_df()
+local.mcmc
+```
+
+What is the probability that the distance has an effect on FSTnorm?
+(b_distance \>0)
+
+```{r}
+ggplot(local.mcmc, aes(x = b_distance)) +
+  geom_histogram()
+local.brm3 %>% hypothesis("distance > 0")
+```
+
+distance having no effect on FSTnorm is virtually 0% probability.
+
+```{r}
+local.brm3 %>% bayes_R2(summary=FALSE) %>% median_hdci
+```
+
+73% of variability (56-79%; 0.95 HDCI) was explained in this model.
+
+### Summary figures 
+
+```{r}
+local.grid <- with(local, list(distance = modelr::seq_range(distance, n = 100)))
+newdata <- local.brm3 %>% emmeans(~distance, at=local.grid) %>% as.data.frame()
+ggplot(newdata, aes(y=emmean, x=distance)) +
+  geom_point(data=local, aes(y=FSTnorm)) +
+  geom_line() +
+  geom_ribbon(aes(ymin=lower.HPD, ymax=upper.HPD), fill='blue', alpha=0.3) +
+  scale_y_continuous('FSTnorm') +
+  scale_x_continuous(('distance') +
+  theme_classic())
+
+newdata <- local.brm3 %>% emmeans(~distance, at=local.grid) %>% gather_emmeans_draws()
+ggplot(newdata, aes(y=.value, x=distance)) +
+  geom_line(aes(group = .draw), colour = 'blue', alpha = 0.01) +
+  geom_point(data=local, aes(y=FSTnorm)) +
+  scale_y_continuous('FSTnorm') +
+  theme_classic() + 
+  xlim(c(0, 60)) +
+  ggsave(filename = "Local scale summary figure.pdf", width = 4, height = 4)
+```
+
+
+
+## Now flip the x and y axes to assess co-regression (local scale).
+
+```{r}
+ggplot(data = local, aes(y = distance, x = FSTnorm)) +
+  geom_point() +
+  geom_smooth(method = 'lm')  #using linear model
+```
+
+```{r}
+#default priors
+local_rev.brm <- brm(bf(distance ~ FSTnorm),
+                data = local,
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+```
+
+```{r}
+prior_summary(local_rev.brm)
+```
+
+Set priors to capture the data. the beta is now flat prior (-INF
+\~INF), so set it as Normal(0,1000) as well. Check the feasibility of
+priors by sampling priors from their distributions.
+
+```{r}
+#set priors
+local_rev.brm1 <- brm(bf(distance ~ FSTnorm),
+                data = local,
+                prior = prior(normal(0,1000), class = 'b'),
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+#sample prior only to check the range of search we are doing.
+
+local_rev.brm1 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+This is weakly informative.
+
+```{r}
+prior_summary(local_rev.brm1)
+sd(local$FSTnorm)
+var(local$distance)
+```
+
+```{r}
+#set new priors
+priors <- prior(normal(30, 25), class='Intercept')+
+  prior(normal(0, 1000), class='b') +
+  prior(gamma(2, 1), class='sigma')
+
+local_rev.brm2 <- brm(bf(distance ~ FSTnorm),
+                data = local,
+                prior = priors,
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+local_rev.brm2 %>% conditional_effects() %>%  plot(points=TRUE)
+
+```
+
+Only little change. Data are sitting within the CI with enough wiggle
+room.
+
+Now sample from priors and posteriors.
+
+```{r}
+priors <- prior(normal(30, 25), class='Intercept')+
+  prior(normal(0, 1000), class='b') +
+  prior(gamma(2, 1), class='sigma')
+
+local_rev.brm3 <- brm(bf(distance ~ FSTnorm),
+                data = local,
+                prior = priors,
+                sample_prior = 'yes',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+local_rev.brm3 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+Now check the priors are not the same as posteriors; so that the prior
+did not drive the posterior.
+
+```{r}
+local_rev.brm3 %>% SUYR_prior_and_posterior()
+```
+
+Data were the main driver for posterior probs.
+
+### MCMC sampling diagnostics 
+
+Check chain mixing.
+
+```{r}
+local_rev.brm3$fit %>% stan_trace()
+```
+
+Top 3 parameters are well converged among chains. All well mixed. check
+the burn-in as well:
+
+```{r}
+local.brm3$fit %>% stan_trace(inc_warmup = TRUE) 
+```
+
+Burn-in was far more than enough before converging.
+
+To check auto-correlations between draws to assess thinning:
+
+```{r}
+local_rev.brm3$fit %>% stan_ac()
+```
+
+Okay so thin = 5 was good.
+
+To further check chain convergence.
+
+```{r}
+local_rev.brm3$fit %>% stan_rhat
+```
+
+higher values (\>1.05) are problematic So these look no issues.
+
+```{r}
+local_rev.brm3$fit %>% stan_ess()
+```
+
+Make sure the sample size and effective size are close to each other;
+otherwise priors may have problems. This goes down to 0.85 only.
+
+```{r}
+local_rev.brm3 %>% pp_check(type='dens_overlay', ndraws = 400)
+```
+
+Black line (y) is the reality. Blue lines are drawn from the population
+that the model generated.
+
+```{r}
+local_rev.brm3 %>% pp_check(type='error_scatter_avg')
+local_rev.brm3 %>% pp_check(type='intervals', x = 'FSTnorm')
+```
+
+Now to check DHRMa residuals:
+
+```{r}
+preds <- local_rev.brm3 %>% posterior_predict(ndraws=250, summary=FALSE)
+local.resids <- createDHARMa(simulatedResponse = t(preds), 
+                            observedResponse = local$distance,
+                            fittedPredictedResponse = apply(preds, 2, median),
+                            integerResponse = FALSE)
+local.resids %>% plot()
+```
+
+No problems found.
+
+### Partial effects plots 
+
+```{r}
+local_rev.brm3 %>% conditional_effects() %>% plot(points = TRUE)
+```
+
+### Model investigation 
+
+```{r}
+local_rev.brm3 %>% summary()
+```
+
+Note the intercept is on average X. CI is credibility intervals.
+
+```{r}
+local.brm3 %>% bayes_R2(summary=FALSE) %>% median_hdci
+```
+
+73% of variability (56-79%; 0.95 HDCI) was explained in this model.
+
+### Summary figures 
+
+```{r}
+local_rev.grid <- with(local, list(FSTnorm = modelr::seq_range(FSTnorm, n = 100)))
+newdata <- local_rev.brm3 %>% emmeans(~FSTnorm, at=local_rev.grid) %>% as.data.frame()
+ggplot(newdata, aes(y=emmean, x=FSTnorm)) +
+  geom_point(data=local, aes(y=distance)) +
+  geom_line() +
+  geom_ribbon(aes(ymin=lower.HPD, ymax=upper.HPD), fill='blue', alpha=0.3) +
+  scale_x_continuous('FSTnorm') +
+  scale_y_continuous(('distance') +
+  theme_classic())
+
+newdata <- local_rev.brm3 %>% emmeans(~FSTnorm, at=local_rev.grid) %>% gather_emmeans_draws()
+ggplot(newdata, aes(y=.value, x=FSTnorm)) +
+  geom_line(aes(group = .draw), colour = 'blue', alpha = 0.01) +
+  geom_point(data=local, aes(y=distance))
+```
+
+
+
+## 2022-10-04
+## All data across local- and regional-scales (Mallora-Elba and Elba-locations)
+
+```{r}
+ggplot(data = alldata, aes(x = distance, y = FSTnorm)) +
+  geom_point() +
+  geom_smooth(method = 'lm')  #using linear model
+```
+
+```{r}
+#default priors
+all.brm <- brm(bf(FSTnorm ~ distance),
+                data = alldata,
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+```
+
+```{r}
+prior_summary(all.brm)
+```
+
+Set beta as Normal(0,10) as well. Check the feasibility of priors
+by sampling priors from their distributions.
+
+```{r}
+#set priors
+all.brm1 <- brm(bf(FSTnorm ~ distance),
+                data = alldata,
+                prior = prior(normal(0,10), class = 'b'),
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+#sample prior only to check the range of search we are doing.
+
+all.brm1 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+This will not be very useful as the slope goes way up and down from the
+wide range. Set better priors.
+
+```{r}
+var(alldata$FSTnorm)
+sd(alldata$distance)
+```
+
+```{r}
+#set new priors
+priors <- prior(normal(0.1,2.5), class='Intercept')+
+  prior(normal(0,0.02), class='b') +
+  prior(gamma(2,0.1), class='sigma')
+
+all.brm2 <- brm(bf(FSTnorm ~ distance),
+                data = alldata,
+                prior = priors,
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+all.brm2 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+This is realistic. Data are sitting within the CI more
+closely with enough wiggle room.
+
+Now sample from priors and posteriors.
+
+```{r}
+priors <- prior(normal(0.1,2.5), class='Intercept')+
+  prior(normal(0,0.02), class='b') +
+  prior(gamma(2,0.1), class='sigma')
+
+all.brm3 <- brm(bf(FSTnorm ~ distance),
+                data = alldata,
+                prior = priors,
+                sample_prior = 'yes',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+all.brm3 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+Now check the priors are not the same as posteriors; so that the prior
+did not drive the posterior.
+
+```{r}
+all.brm3 %>% SUYR_prior_and_posterior()
+```
+
+Data were the main driver for posterior probs.
+
+### MCMC sampling diagnostics 
+
+Check chain mixing.
+
+```{r}
+all.brm3$fit %>% stan_trace()
+```
+
+Top 3 parameters are well converged among chains. All well mixed. check
+the burn-in as well:
+
+```{r}
+all.brm3$fit %>% stan_trace(inc_warmup = TRUE) 
+```
+
+Burn-in was far more than enough before converging.
+
+To check auto-correlations between draws to assess thinning:
+
+```{r}
+all.brm3$fit %>% stan_ac()
+```
+
+Okay so thin = 5 was good.
+
+To further check chain convergence.
+
+```{r}
+all.brm3$fit %>% stan_rhat
+```
+
+higher values (\>1.05) are problematic. So these look no problems.
+
+```{r}
+all.brm3$fit %>% stan_ess()
+```
+
+Make sure the sample size and effective size are close to each other;
+otherwise priors may have problems.
+
+### Model validation 
+
+**Posterior probability checks**
+
+```{r}
+all.brm3 %>% pp_check(type='dens_overlay', ndraws = 250)
+```
+
+The sample appears to represent the population.
+
+```{r}
+all.brm3 %>% pp_check(type='error_scatter_avg')
+all.brm3 %>% pp_check(type='intervals', x = 'distance')
+```
+
+Now to check DARHMa residuals:
+
+```{r}
+preds <- all.brm3 %>% posterior_predict(ndraws=250, summary=FALSE)
+region.resids <- createDHARMa(simulatedResponse = t(preds), 
+                            observedResponse = alldata$FSTnorm,
+                            fittedPredictedResponse = apply(preds, 2, median),
+                            integerResponse = FALSE)
+region.resids %>% plot()
+```
+
+No problems found.
+
+### Partial effects plots 
+
+```{r}
+all.brm3 %>% ggpredict() %>% plot(add.data = TRUE)
+```
+
+### Model investigation 
+
+```{r}
+all.brm3 %>% summary()
+```
+
+Note the intercept is on average X. CI is credibility intervals.
+
+```{r}
+all.brm3 %>% 
+  tidy_draws() %>% 
+  gather_variables() %>% 
+  median_hdci()
+```
+
+What is the probability that the distance has an effect on FSTnorm?
+(b_distance \>0)
+
+```{r}
+all.mcmc <- all.brm3 %>% as_draws_df()
+ggplot(all.mcmc, aes(x = b_distance)) +
+  geom_histogram()
+all.brm3 %>% hypothesis("distance > 0")
+```
+
+distance having no effect on FSTnorm is virtually zero.
+```{r}
+all.brm3 %>% bayes_R2(summary=FALSE) %>% median_hdci
+```
+
+\99% of variability (57-77%; 0.95 HDCI) was explained in this model.
+
+### Summary figures 
+
+```{r}
+all.grid <- with(alldata, list(distance = modelr::seq_range(distance, n = 100)))
+newdata <- all.brm3 %>% emmeans(~distance, at=all.grid) %>% as.data.frame()
+ggplot(newdata, aes(y=emmean, x=distance)) +
+  geom_point(data=alldata, aes(y=FSTnorm)) +
+  geom_line() +
+  geom_ribbon(aes(ymin=lower.HPD, ymax=upper.HPD), fill='blue', alpha=0.3) +
+  scale_y_continuous('FSTnorm') +
+  scale_x_continuous('distance') +
+  theme_classic()
+
+newdata <- all.brm3 %>% emmeans(~distance, at=all.grid) %>% gather_emmeans_draws()
+ggplot(newdata, aes(y=.value, x=distance)) +
+  geom_line(aes(group = .draw), colour = 'blue', alpha = 0.01) +
+  geom_point(data=alldata, aes(y=FSTnorm)) +
+  scale_y_continuous('FSTnorm') +
+  theme_classic() +
+  ggsave(filename = 'All scale summary plot.pdf', width = 4, height = 4)
+  
+```
+
+## Now flip the x and y axes to assess co-regression (regional scale).
+
+```{r}
+#default priors
+all_rev.brm <- brm(bf(distance ~ FSTnorm),
+                data = alldata,
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+```
+
+```{r}
+prior_summary(all_rev.brm)
+```
+
+```{r}
+ggplot(data = alldata, aes(y = distance, x = FSTnorm)) +
+  geom_point() +
+  geom_smooth(method = 'lm')  #using linear model
+```
+
+Set beta as Normal(0,1000) as well. Check the feasibility of
+priors by sampling priors from their distributions.
+
+```{r}
+#set priors
+all_rev.brm1 <- brm(bf(distance ~ FSTnorm),
+                data = alldata,
+                prior = prior(normal(0,1000), class = 'b'),
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+#sample prior only to check the range of search we are doing.
+
+all_rev.brm1 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+This is not problematic.
+
+```{r}
+prior_summary(all_rev.brm1)
+sd(alldata$FSTnorm)
+var(alldata$distance)
+```
+
+```{r}
+#set new priors
+priors <- prior(normal(200, 20), class='Intercept')+
+  prior(normal(0, 1000), class='b') +
+  prior(gamma(2, 1), class='sigma')
+
+all_rev.brm2 <- brm(bf(distance ~ FSTnorm),
+                data = alldata,
+                prior = priors,
+                sample_prior = 'only',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+
+all_rev.brm2 %>% conditional_effects() %>%  plot(points=TRUE)
+
+```
+
+Only little change. Data are sitting within the CI with enough wiggle
+room.
+
+Now sample from priors and posteriors.
+
+```{r}
+all_rev.brm3 <- brm(bf(distance ~ FSTnorm),
+                data = alldata,
+                prior = priors,
+                sample_prior = 'yes',
+                iter = 5000,
+                warmup = 1000,
+                chains = 3, cores = 3,
+                thin = 5)
+# for zero-intercept, bf(distance ~ 0 + FSTnorm)
+all_rev.brm3 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+Now check the priors are not the same as posteriors; so that the prior
+did not drive the posterior.
+
+```{r}
+all_rev.brm3 %>% SUYR_prior_and_posterior()
+```
+
+Data were the main driver for posterior probs.
+
+### MCMC sampling diagnostics 
+
+Check chain mixing.
+
+```{r}
+all_rev.brm3$fit %>% stan_trace()
+```
+
+Top 3 parameters are well converged among chains. All well mixed. check
+the burn-in as well:
+
+```{r}
+all.brm3$fit %>% stan_trace(inc_warmup = TRUE) 
+```
+
+Burn-in was far more than enough before converging.
+
+To check auto-correlations between draws to assess thinning:
+
+```{r}
+all_rev.brm3$fit %>% stan_ac()
+```
+
+Okay so thin = 5 was good.
+
+To further check chain convergence.
+
+```{r}
+all_rev.brm3$fit %>% stan_rhat
+```
+
+higher values (\>1.05) are a issue. So these look okay. (If this shows
+problems, maybe priors need narrower.)
+
+```{r}
+all_rev.brm3$fit %>% stan_ess()
+```
+
+Make sure the sample size and effective size are close to each other;
+otherwise priors may have problems. Looks in order.
+
+```{r}
+all_rev.brm3 %>% pp_check(type='dens_overlay', ndraws = 400)
+```
+
+The sample 'can' appear to represent the population.
+
+```{r}
+all_rev.brm3 %>% pp_check(type='error_scatter_avg')
+all_rev.brm3 %>% pp_check(type='intervals', x = 'FSTnorm')
+```
+
+Now to check DARHMa residuals:
+
+```{r}
+preds <- all_rev.brm3 %>% posterior_predict(ndraws=250, summary=FALSE)
+all.resids <- createDHARMa(simulatedResponse = t(preds), 
+                            observedResponse = alldata$distance,
+                            fittedPredictedResponse = apply(preds, 2, median),
+                            integerResponse = FALSE)
+all.resids %>% plot()
+```
+
+No problems found. Though the lower 33%ile residuals looks odd. Probably
+due to the lack of samples.
+
+### Partial effects plots 
+
+```{r}
+all_rev.brm3 %>% conditional_effects() %>%  plot(points=TRUE)
+```
+
+### Model investigation 
+
+```{r}
+all_rev.brm3 %>% summary()
+```
+
+Note the intercept is on average X. CI is credibility intervals.
+
+```{r}
+all_rev.brm3 %>% 
+  tidy_draws() %>% 
+  gather_variables() %>% 
+  median_hdci()
+```
+
+```{r}
+all.brm3 %>% bayes_R2(summary=FALSE) %>% median_hdci
+```
+
+99% of variability (0.95 HDCI) was explained in this model.
+
+### Summary figures 
+
+```{r}
+all_rev.grid <- with(alldata, list(FSTnorm = modelr::seq_range(FSTnorm, n = 100)))
+newdata <- all_rev.brm3 %>% emmeans(~FSTnorm, at=all_rev.grid) %>% as.data.frame()
+ggplot(newdata, aes(y=emmean, x=FSTnorm)) +
+  geom_point(data=alldata, aes(y=distance)) +
+  geom_line() +
+  geom_ribbon(aes(ymin=lower.HPD, ymax=upper.HPD), fill='blue', alpha=0.3) +
+  scale_x_continuous('FSTnorm') +
+  scale_y_continuous(('distance') +
+  theme_classic())
+
+newdata <- all_rev.brm3 %>% emmeans(~FSTnorm, at=all_rev.grid) %>% gather_emmeans_draws()
+head(newdata)
+ggplot(newdata, aes(y=.value, x=FSTnorm)) +
+  geom_line(aes(group = .draw), colour = 'blue', alpha = 0.01) +
+  geom_point(data=alldata, aes(y=distance))
+```
+
+
+
+# Hypothesis testing 
+
+Are the slopes of co-regression the same at the local and regional
+scales?
+
+Fist, the slope from local.mcmc and the (1/slope) from local_rev.mcmc
+are to be averaged to assess co-regression slope. And do the same for
+the all-data slope.
+
+Then compare these slopes.
+
+```{r}
+#Get the draws from each model.
+local.mcmc <- local.brm3 %>% as_draws_df()
+local_rev.mcmc <- local_rev.brm3 %>% as_draws_df()
+all.mcmc <- all.brm3 %>% as_draws_df()
+all_rev.mcmc <- all_rev.brm3 %>% as_draws_df()
+
+#For reverse regression, the slope "b_FSTnort" is to be inverted. Added as "b_distance" at the end. 
+all_rev.mcmc <- mutate(all_rev.mcmc, b_distance = (1/b_FSTnorm))
+local_rev.mcmc <- mutate(local_rev.mcmc, b_distance = (1/b_FSTnorm))
+
+#all model output to be combined. For the slope, the average of 2 models' "b_distance" is used and called as "local_slope" and "all_slope".
+lastdata <- bind_cols(local.mcmc, local_rev.mcmc, all.mcmc, all_rev.mcmc) %>% mutate(local_slope = (b_distance.2 + b_distance.23)/2, all_slope = (b_distance.25 + b_distance.46)/2)
+
+#The difference of the "local_slope" and "all_slope" is finally added to the last data set to examine.
+lastdata <- lastdata %>% mutate(slope_difference = (all_slope - local_slope))
+```
+
+```{r}
+#Summary of the slopes and difference via HDCI.
+lastdata %>% median_hdci(local_slope, all_slope, slope_difference)
+#Get the visual plot
+lastdata %>% median_hdci(local_slope, all_slope, slope_difference) -> results 
+result_summary <- data.frame(group = c("1_local","2_all","3_difference"), 
+                             median = c(results$local_slope, results$all_slope, results$slope_difference), 
+                             lowHDCI = c(results$local_slope.lower, results$all_slope.lower, results$slope_difference.lower), 
+                             highHDCI = c(results$local_slope.upper, results$all_slope.upper, results$slope_difference.upper))
+result_summary %>% ggplot(aes(y=median, x=group)) +
+  geom_pointrange(ymin = result_summary$lowHDCI, ymax = result_summary$highHDCI) +
+  ylim(-0.0005, 0.0025) +
+  theme_classic() +
+  geom_hline(yintercept=0, linetype='dotted') +
+  labs(y = "Slope (median, 0.95 HDCI)", x = "Group") +
+  ggsave(filename = "slopes_local-all-diff2.pdf", width = 5, height =3)
+```
+All-data slope median is larger than local slope median; but the probability that the former is larger is.
+```{r}
+lastdata %>% summarise(P = sum(slope_difference>0)/n())
+```
+only 74.7%.
+So, all-data slope median is larger than local slope median; but the probability that the former is larger is only 74.7%.
+In other words, there is 25.3% probability that the local slope is larger than the all-data slope.
+The difference of probability is 49.4% out of 100%; One is only 2.95-times probably than the other.
+
+What is the highest density credibility intervals that includes zero?
+```{r}
+lastdata %>% median_hdci(slope_difference, .width = 0.5)
+lastdata %>% median_hdci(slope_difference, .width = 0.57041)
+lastdata %>% median_hdci(slope_difference, .width = 0.57042)
+```
+The HDCI width of 57% already contains zero (meaning slopes are not different). 
+
+What is the probability of the slope difference being due to the error and not data significance?
+```{r}
+sd(lastdata$slope_difference)
+```
+
+So, what is the probability of the slope difference being just errors?
+```{r}
+bayestestR::rope(x = lastdata$slope_difference, range = c(-sd(lastdata$slope_difference), sd(lastdata$slope_difference)))
+bayestestR::rope(x = lastdata$slope_difference, range = c(-sd(lastdata$slope_difference), sd(lastdata$slope_difference))) %>% plot()
+
+pdf('slope-diff_dist_error-width.pdf', width = 6, height = 4)
+bayestestR::rope(x = lastdata$slope_difference, range = c(-sd(lastdata$slope_difference), sd(lastdata$slope_difference))) %>% plot()
+dev.off()
+
+bayestestR::rope(x = lastdata$slope_difference, range = c(-sd(lastdata$slope_difference)*2, sd(lastdata$slope_difference)*2))
+pdf('slope-diff_dist_error-width_by-2SD.pdf', width = 6, height = 4)
+bayestestR::rope(x = lastdata$slope_difference, range = c(-sd(lastdata$slope_difference)*2, sd(lastdata$slope_difference)*2)) %>% plot()
+dev.off()
+```
+So 62.5% probability that the slope difference does not depart from zero by 1SD of the slope difference.
+In other words, the probability that the slope difference departs from zero by 1SD was only 37.5%.
+
+If 2SD, 1-95.88% = only 4.12% probability that departs from zero.
+
+
+# Conclusions
+The posterior probability distribution of the slope difference (-0.00025 ~ 0.00043; 95% HDCI) departing from zero by 1SD is only 37.5%.
+Therefore there is insufficient evidence to support that the slope differs. 
+
+
+

@@ -1,0 +1,122 @@
+---
+title: "14c_3D_MDS"
+output: html_document
+---
+
+```{r}
+###3D-MDS by rgl
+#packages
+library(devtools)
+library(rgl)
+library(magick)
+
+#metadata is first made in a CSV file as "metadata_3d_##worms.txt".
+#Worm_ID	Location	Haplotype_group	Loc_color	Hap_color
+#OalgCAVL_A11	Cavoli	A	"#00A9FF"	"#F8766D"
+#OalgCAVL_A12	Cavoli	A	"#00A9FF"	"#F8766D"  etc.
+
+#Place a .mds file and the metadata file in the working folder. 
+
+#Setting the working directory to one that contains .mds and metadata files.
+setwd("results/12_ngs_dist_region/3D-MDS")
+
+#310 worms (Oalg Elba x Mallorca; per site)
+annotfile="metadata_3d_180810_310_oalg.txt"
+mdsfile="310Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1.mds"
+maintitle="3D-MDS_310worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf"
+tmpdir="180810_310_Oalg_lib"
+dir.create(tmpdir)
+ annot <- read.table(annotfile, sep="\t", header=T)
+ mds <- read.table(mdsfile, stringsAsFact=F)
+ Dim <- as.data.frame(mds)
+ colnames(Dim) <-paste(rep("Dim",ncol(mds)), 1:ncol(mds), sep="") 
+ Dim$Worm_ID <- factor(annot$Worm_ID)
+ Dim$Location <- factor(annot$Location, levels = c("Capo_Vita","Sorgente","Sant_Andrea","Pomonte","Seccheto","Cavoli","Cala_del_Fico","Zuccale","Magaluf","Bella_Dona", "Son_Serra"))
+ Dim$Haplotype_group <- factor(annot$Haplotype_group)
+ Dim$Loc_color <- factor(annot$Loc_color)
+ Dim$Hap_color <- factor(annot$Hap_color)
+  tmp <- unlist(strsplit(colnames(mds), split="_"))   #Extract variation
+  val <- as.numeric(tmp[seq(2,length(tmp),2)])        #Variation
+  rm(tmp)
+ xlab=paste("Dim1 (",signif(val[1], digits=3),"%)",sep="",collapse="")
+ ylab=paste("Dim2 (",signif(val[2], digits=3),"%)",sep="",collapse="")
+ zlab=paste("Dim3 (",signif(val[3], digits=3),"%)",sep="",collapse="")
+ r3dDefaults$windowRect <- c(0,50, 800, 600) 
+ par3d(cex=0.6)
+ plot3d(-Dim$Dim1, Dim$Dim2, Dim$Dim3, xlab, ylab, zlab, box=FALSE, col=Dim$Loc_color, size=1, type="s")
+ legend3d("topright", legend = c("Capo Vita","Sorgente","Sant Andrea","Pomonte","Seccheto","Cavoli","Cala del Fico","Zuccale","Magaluf","Bella Dona", "Son Serra"), pch = 16, col = c("#F8766D", "#CD9600", "#7CAE00", "#FF61CC", "#00BFC4", "#00A9FF", "#C77CFF", "#00BE67", "#F900B9", "#8B93FF", "#8438AD"), cex=1, inset=c(0.02))
+ play3d(spin3d(axis = c(0, 0, 1), rpm = -7.5), duration = 1)
+ movie3d(spin3d(axis = c(0, 0, 1), rpm = 3), duration = 19.9, fps=10,  movie=maintitle, type = "gif", dir = tmpdir, clean = FALSE, convert = TRUE) 
+#In Linux terminal within the folder with png files (without top-view)
+# ImageMagick 6.9.7-4 Q16 x86_64 20170114 http://www.imagemagick.org needs to be installed.
+# $ convert *.png 3D-MDS_310worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf.gif
+# $ convert -delay 8 3D-MDS_310worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf.gif 3D-MDS_310worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf_slow.gif
+#After adjusting the 3D MDS window, take a snapshot (from the top).
+ rgl.snapshot(filename=paste(tmpdir,"/",maintitle,"_top-view.png",sep="", collapse=""), fmt="png")
+ 
+#286 worms (Oalg Elba; per site)
+annotfile="metadata_3d_180810_286_oalg_elba.txt"
+mdsfile="286Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1.mds"
+maintitle="3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf"
+tmpdir="180810_286_Oalg_Elba_lib"
+dir.create(tmpdir)
+ annot <- read.table(annotfile, sep="\t", header=T)
+ mds <- read.table(mdsfile, stringsAsFact=F)
+ Dim <- as.data.frame(mds)
+ colnames(Dim) <-paste(rep("Dim",ncol(mds)), 1:ncol(mds), sep="") 
+ Dim$Worm_ID <- factor(annot$Worm_ID)
+ Dim$Location <- factor(annot$Location, levels = c("Capo_Vita","Sorgente","Sant_Andrea","Pomonte","Seccheto","Cavoli","Cala_del_Fico","Zuccale"))
+ Dim$Haplotype_group <- factor(annot$Haplotype_group)
+ Dim$Loc_color <- factor(annot$Loc_color)
+ Dim$Hap_color <- factor(annot$Hap_color)
+  tmp <- unlist(strsplit(colnames(mds), split="_"))   #Extract variation
+  val <- as.numeric(tmp[seq(2,length(tmp),2)])        #Variation
+  rm(tmp)
+ xlab=paste("Dim1 (",signif(val[1], digits=3),"%)",sep="",collapse="")
+ ylab=paste("Dim2 (",signif(val[2], digits=3),"%)",sep="",collapse="")
+ zlab=paste("Dim3 (",signif(val[3], digits=3),"%)",sep="",collapse="")
+ r3dDefaults$windowRect <- c(0,50, 800, 600) 
+ par3d(cex=0.6)
+ plot3d(-Dim$Dim1, Dim$Dim2, Dim$Dim3, xlab, ylab, zlab, box=FALSE, col=Dim$Loc_color, size=1, type="s")
+ legend3d("topright", legend = c("Capo Vita","Sorgente","Sant Andrea","Pomonte","Seccheto","Cavoli","Cala del Fico","Zuccale"), pch = 16, col = c("#F8766D", "#CD9600", "#7CAE00", "#FF61CC", "#00BFC4", "#00A9FF", "#C77CFF", "#00BE67"), cex=1, inset=c(0.02))
+ play3d(spin3d(axis = c(0, 0, 1), rpm = -7.5), duration = 1)
+ movie3d(spin3d(axis = c(0, 0, 1), rpm = 3), duration = 19.9, fps=10,  movie=maintitle, type = "gif", dir = tmpdir, clean = FALSE, convert = TRUE) 
+#In Linux terminal within the folder with png files (without top-view)
+# ImageMagick 6.9.7-4 Q16 x86_64 20170114 http://www.imagemagick.org needs to be installed.
+# $ convert *.png 3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf.gif
+# $ convert -delay 8 3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf.gif 3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf_slow.gif
+#After adjusting the 3D MDS window, take a snapshot (from the top).
+ rgl.snapshot(filename=paste(tmpdir,"/",maintitle,"_top-view.png",sep="", collapse=""), fmt="png")
+
+#286 worms (Oalg Elba; per mtDNA clades)
+annotfile="metadata_3d_180810_286_oalg_elba_mtDNA.txt"
+mdsfile="286Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1.mds"
+maintitle="3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf_mtDNA"
+tmpdir="180810_286_Oalg_Elba_lib_mtDNA"
+dir.create(tmpdir)
+ annot <- read.table(annotfile, sep="\t", header=T)
+ mds <- read.table(mdsfile, stringsAsFact=F)
+ Dim <- as.data.frame(mds)
+ colnames(Dim) <-paste(rep("Dim",ncol(mds)), 1:ncol(mds), sep="") 
+ Dim$Worm_ID <- factor(annot$Worm_ID)
+ Dim$mtDNA <- factor(annot$mtDNA)
+ Dim$mt_color <- factor(annot$mt_color)
+  tmp <- unlist(strsplit(colnames(mds), split="_"))   #Extract variation
+  val <- as.numeric(tmp[seq(2,length(tmp),2)])        #Variation
+  rm(tmp)
+ xlab=paste("Dim1 (",signif(val[1], digits=3),"%)",sep="",collapse="")
+ ylab=paste("Dim2 (",signif(val[2], digits=3),"%)",sep="",collapse="")
+ zlab=paste("Dim3 (",signif(val[3], digits=3),"%)",sep="",collapse="")
+ r3dDefaults$windowRect <- c(0,50, 800, 600) 
+ par3d(cex=0.6)
+ plot3d(-Dim$Dim1, Dim$Dim2, Dim$Dim3, xlab, ylab, zlab, box=FALSE, col=Dim$mt_color, size=1, type="s")
+ legend3d("topright", legend = c("A","B","C","D","E","F"), pch = 16, col = c("#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00","#ffff33"), cex=1, inset=c(0.02))
+ play3d(spin3d(axis = c(0, 0, 1), rpm = -7.5), duration = 1)
+ movie3d(spin3d(axis = c(0, 0, 1), rpm = 3), duration = 19.9, fps=10,  movie=maintitle, type = "gif", dir = tmpdir, clean = FALSE, convert = TRUE) 
+#In Linux terminal within the folder with png files (without top-view)
+# ImageMagick 6.9.7-4 Q16 x86_64 20170114 http://www.imagemagick.org needs to be installed.
+# $ convert *.png 3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf_mtDNA.gif
+# $ convert -delay 8 3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf_mtDNA.gif 3D-MDS_286worms_OalgC3_prior1_minMAF0.01_ind0.5_GL2_rf_mtDNA_slow.gif
+#After adjusting the 3D MDS window, take a snapshot (from the top).
+ rgl.snapshot(filename=paste(tmpdir,"/",maintitle,"_top-view.png",sep="", collapse=""), fmt="png")
+```

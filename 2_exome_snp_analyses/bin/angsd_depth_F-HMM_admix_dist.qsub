@@ -1,0 +1,208 @@
+#!/bin/bash
+#$ -N ngsF-HMM
+#$ -cwd
+#$ -j y
+#$ -pe smp 40
+#$ -R y
+#$ -S /bin/bash
+#$ -l h_vmem=100G,virtual_free=100G
+#$ -q main.q@@intelhosts
+
+#angsd_depth_F-HMM_admix_dist.qsub located in bin.
+#This script takes sorted bam files and reference file, create an ANGSD depth .info file, estimates individual inbreeding coefficient F 
+# using ngsF-HMM, admixture proportions with ngsAdmix, and genomic distances for MDS using ngsDist.
+#Samples included are listed in $2 sampleinfo.
+#Depth percentile range is set using the ANGSD depth .info file with specified values below.
+
+reffile=$1 #Oalg_verC3 etc.
+sampleinfo=$2 #data/sample_info_180810_SANT.list etc.
+bamdir=$3 #results/10b-11_indel_angsd_depth/180810_310_Oalg etc.
+outdir=$4 #results/16_angsd_F-HMM_admix_dist_region/180810_SANT etc.
+snp_pval=$5 #1e-3 etc. for SNP calling.
+k_max=$6 #5 etc. for NGSadmix
+maxdep=$(cat $sampleinfo | wc -l | awk '{print $1*20}') #20x of sample number for checking the depth range for ANGSD. Above this is pooled.
+minind=$(cat $sampleinfo | wc -l | awk '{print int($1/2+0.5)}')   #10 etc. 50% of sample number, rounded up integral
+maxdepind=4  #Used to filter exome-wide SNP-sites with high sample-depths to exclude repeat-regions in the genome; -1 means no filtering.
+hwepval=-1 #Used to monitor SNP-sites extremely departed from HWE; -1 means no filtering on posterior genotype likelihoods.
+prior=1 #All ANGSD SNP-calling is using allele frequency as a prior as this is done for each population.
+pdir=$(pwd)
+
+regions=data/ref/Oalg_verC3_non-repeat_cov10_common_contigs.rf.txt
+    #A list of regions ('chr:') for -rf in ANGSD. Manually made based on 30 samples with ca. 1X coverage to exclude reads from highly repeated regions but accommodate
+    # stochasticity. Contigs that have the mean of average coverage <10X are included, but ones that have no mapped reads or all samples had >4X coverage were excluded.
+    # Also regions (=contigs) that any of populaitons had no mapped reads were also excluded (common only).
+	# See ../../1_transcriptome_assembly/results/Final_reference_transcriptomes/README.txt for details.	
+	
+    # Oalg_verC3_non-repeat_cov10_common_contigs.rf.txt
+    # TRINITY_DN10004_c0_g1_i2:
+    # TRINITY_DN10005_c0_g1_i1:
+    # TRINITY_DN10009_c0_g1_i1:   ...
+
+echo "job ID: $JOB_ID started"
+hostname
+date
+echo
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir -p /scratch/$USER/tmp.$JOB_ID
+cd /scratch/$USER/tmp.$JOB_ID
+echo "copying reference file $reffile"
+cp data/ref/$(echo $reffile | sed 's/Oalg/Oalg_transcripts/')*_hits.fasta $reffile.fasta
+echo
+
+echo "copying realingned bam and index files, unzipping them, and making a list of samples included"
+echo "Sample list: $sampleinfo"
+echo "Source: $bamdir/$reffile"
+for sample in $(cat $sampleinfo | cut -f1); do
+ echo $sample
+ cp $bamdir/$reffile/$sample*bam.gz .
+done
+unpigz *bam.gz
+for sample in $(cat $sampleinfo | cut -f1); do
+ cp $bamdir/$reffile/$sample*bai.gz .
+done
+unpigz *bai.gz
+ls *realigned.bam > bam_list.txt
+n_ind=$(cat bam_list.txt | wc -l)          #Count the number of individual samples
+echo "done"
+echo
+
+echo "ANGSD-1 starting for mapped depth check..."
+date
+samtools faidx $reffile.fasta
+angsd-0.929 -P $NSLOTS -b bam_list.txt -out ${n_ind}Samples_to_${reffile}_MinQ20_dep -ref $reffile.fasta\
+ -minQ 2 -trim 0 -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 -doQsDist 1 -doDepth 1 -doCounts 1 -maxDepth $maxdep
+Rscript YOURTOOLS/ngsTools/Scripts/plotQC.R ${n_ind}Samples_to_${reffile}_MinQ20_dep 2> /dev/null
+echo "ANGSD-1 depth-check complete"
+date
+echo
+ls -l *
+echo
+#Checking the depth range from output above for the next ANGSD step
+mindepth=$(sed -e '1,/Global_depth/d' ${n_ind}Samples_to_${reffile}_MinQ20_dep.info| awk '$2>0.05 {print $1}'| head -n1) #15 etc.  5 percentile
+maxdepth=$(sed -e '1,/Global_depth/d' ${n_ind}Samples_to_${reffile}_MinQ20_dep.info| awk '$2<0.80 {print $1}'| tail -n1) #85 etc. 80 percentile
+echo "mindepth=$mindepth ; maxdepth=$maxdepth (5-80 percentiles) will be used in ANGSD"
+
+echo "ANGSD-2 processing for inbreeding assessment..."
+samtools faidx $reffile.fasta
+angsd-0.929 -P $NSLOTS -b bam_list.txt -ref $reffile.fasta -rf $regions\
+ -out ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F\
+ -GL 2 -doGlf 3 -doMaf 1 -doMajorMinor 1 -minMaf 0.01 -doPost $prior -SNP_pval $snp_pval\
+ -doHWE 1 -minHWEpval $hwepval -doCounts 1 -doQsDist 1 -doDepth 1 -maxDepth $maxdep -minInd $minind\
+ -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 -minQ 2\
+ -setMaxDepthInd $maxdepind -setMinDepth $mindepth -setMaxDepth $maxdepth
+  #-doGlf 3: binary 3 times likelihood   .glf.gz
+
+Rscript YOURTOOLS/ngsTools/Scripts/plotQC.R ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F 2> /dev/null
+NSITES=$(zcat ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F.mafs.gz | tail -n+2 | wc -l)
+echo "ANGSD-2 for inbreeding assessment complete"
+echo "Found $NSITES SNP-sites."
+date
+echo
+ls -l *
+echo
+
+echo "ngsF-HMM processing by single (ngsF-HMM) for inbreeding individual coefficient estimation..."
+date
+zcat ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F.glf.gz > ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F.glf
+ngsF-HMM --geno ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F.glf --loglkl --n_ind $n_ind --n_sites $NSITES --n_threads $NSLOTS\
+ --freq r --indF r --out ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}.F-HMM --min_epsilon 1e-6 &> /dev/null
+  #--loglkl: input are genotype log-likelihoods.
+  #--freq r: Initial frequency values are random.
+  #--indF: initial inbreeding and transition parameter values. e.g. 0.1-0.1 or 'r' for random.
+  #--min_epsilon: maximum RMSD between iterations to assume convergence. 1e-6 ~ 1e-9 recommended for very low coverage.
+echo "ngsF-HMM complete"
+rm ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F.glf
+head -n $((n_ind+1)) ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}.F-HMM.indF | tail -n $n_ind | cut -f1\
+  > ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}.F-HMM.new.indF
+echo "${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}.F-HMM.new.indF"
+cat ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}.F-HMM.new.indF; echo
+ls -l *
+date
+echo
+
+echo "ANGSD-3 processing with inbreeding adjustment..."
+angsd-0.929 -P $NSLOTS -b bam_list.txt -ref $reffile.fasta -anc $reffile.fasta -rf $regions\
+ -out ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj -doGeno 8\
+ -GL 2 -doGlf 2 -doMaf 1 -doMajorMinor 1 -doPost $prior -doHWE 1 -minHWEpval $hwepval -doCounts 1\
+ -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 -SNP_pval $snp_pval -setMaxDepthInd $maxdepind\
+ -setMinDepth $mindepth -setMaxDepth $maxdepth -minInd $minind -minQ 2 -minMaf 0.01\
+ -doQsDist 1 -doDepth 1 -maxDepth $maxdep -dovcf 1\
+ -doSaf 2 -indF ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}.F-HMM.new.indF
+  #-doGlf 2 to output beagle likelihood file for NGSadmix
+  #-doGeno 8 for ngsDist
+  #-doSaf 2 -indF to incorporated indF coefficient
+  #By default, -doMaf 1 will not print out a file with the allele frequencies.
+
+Rscript YOURTOOLS/ngsTools/Scripts/plotQC.R ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj 2> /dev/null
+echo "ANGSD-3 F-adjustment complete"
+n_sites=$(zcat ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.beagle.gz | tail -n +2 | wc -l) #get the new number of sites
+echo "Found $n_sites SNP-sites in ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.beagle.gz."
+date
+echo
+ls -l *
+echo
+
+mkdir -p $outdir/$reffile
+echo "NGSadmix processing from K=2 to $k_max"
+for K in $(seq 2 $k_max); do
+ echo "k=$K"
+  NGSadmix -K $K -likes ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.beagle.gz\
+    -outfiles ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_K$K -P $NSLOTS -minMaf 0
+ mv ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_K$K.qopt $outdir/$reffile
+ echo "qopt file copied to $outdir/$reffile"
+ rm ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_K$K.*
+ echo
+done
+echo "NGSadmix finished"
+date
+echo
+
+echo "ngsDist-FastME starting..."
+cat $sampleinfo | cut -f1 | sort > sample.list
+echo "single"
+ngsDist -geno ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.geno.gz\
+ -probs -n_ind $n_ind -n_sites $n_sites -labels sample.list -verbose 1 -n_threads $NSLOTS\
+ -o ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.dist
+fastme -T $NSLOTS     -i ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.dist\
+       -m B -n B      -o ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.tree
+echo
+echo "bootstrap"
+ngsDist -geno ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj.geno.gz\
+-probs -n_ind $n_ind -n_sites $n_sites -labels sample.list -verbose 1 -n_threads $NSLOTS\
+-o ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_boot.dist\
+-n_boot_rep 200 -boot_block_size 100 -seed 1
+fastme -T $NSLOTS     -i ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_boot.dist\
+-D 201 -m B -n B     -o ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_boot.trees
+head -n 1                ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_boot.trees > main.nwk
+tail -n+2                ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_boot.trees > boot.nwk
+raxmlHPC -m GTRCAT    -n ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_bootstrap.tree -t main.nwk -z boot.nwk -f b
+mv    RAxML_bipartitions.${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_bootstrap.tree\
+                        ${n_ind}Samples_to_${reffile}_MinQ20_SNPpval${snp_pval}_Prior${prior}_F-adj_bootstrap.tree
+echo "ngsDist-FastME done"
+ls -l *
+date
+echo
+
+echo "########## moving result to:"
+echo " $outdir/$reffile"
+rm *_realigned.bam *_realigned.bai bam_list.txt sample.list *.qs *fasta*
+rm *.F-HMM.geno *.F-HMM.ibd        #These large F-HMM output files are not used unless Indentical-by-Decend analysis is needed.
+ls -l *
+mv * $outdir/$reffile
+echo
+echo
+
+rm -r /scratch/$USER/tmp.$JOB_ID
+echo "job ID: $JOB_ID finished."
+date
+
+mv $pdir/$JOB_NAME.o$JOB_ID $outdir/$reffile/${n_ind}Samples_to_${reffile}_MinQ20_F-HMM.qsub_log

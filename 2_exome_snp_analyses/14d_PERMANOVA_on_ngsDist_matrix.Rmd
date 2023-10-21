@@ -1,0 +1,59 @@
+---
+title: "14d_PERMANOVA_on_ngsDist_matrix"
+output: html_document
+---
+
+```{r}
+#packages
+library(vegan)
+library(RVAideMemoire)
+
+#metadata "metadata_##worms.txt" is first made in the working folder as a tab-delimited text file.
+#Example:
+#Worm_ID	Haplotype_group	Location Collection_year
+#OalgA10CA	A	Cavoli	2016
+#OalgA10SA	A	SantAndrea	2016
+#OalgA4CA		A	Cavoli	2016
+#...
+
+#metadata_180810_310_oalg_islands.txt
+#Worm_ID	Haplotype_group	Location	Island	Collection_year
+#OalgBEDO_H01	H	Bella_Dona	Mallorca	2017
+#OalgCAVL_A11	A	Cavoli	Elba	2016
+#OalgCAVL_A12	A	Cavoli	Elba	2016
+#...
+
+
+#Overall location-isolation PERMANOVA analysis
+#Setting the working directory to where dist.files and metadata.txt files are.
+setwd("results/12_ngs_dist_region/permanova")
+
+#286 Oalg Elba worms
+ annot_file = "metadata_180810_286_oalg_elba.txt"
+ dist_file = "286Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1.dist" #Outcome of ngsDist; n-by-n distance matrix.
+ mydist <- as.dist(read.table(dist_file, sep="\t", header = F, skip = 2, row.names = 1))
+ annot <- read.table(annot_file, sep="\t", header=T) #annot$Location has location information,
+ summary(annot$Location)
+ print(adonis(mydist ~ Location, data=annot, permutations=9999)) #Perform PERMANOVA on ngsDist matrix using Location as a grouping term. 9999 permutations.
+ pairwise.perm.manova(mydist, annot$Location, p.method = "BY", nperm=9999) #Perform pairwise PERMANOVA on ngsDist matrix. 9999 permutations. 
+  #BY: False discovery rate control by Benjamini, Y., and Yekutieli, D. (2001). Annals of Statistics, 29, 1165--1188. 10.1214/aos/1013699998.
+ 
+#310 Oalg individuals 
+ annot_file="metadata_180810_310_oalg.txt"
+ dist_file="310Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1.dist" #Outcome of ngsDist; n-by-n distance matrix.
+ mydist <- as.dist(read.table(file=dist_file, sep="\t", header = F, skip = 2, row.names = 1))
+ annot <- read.table(file=annot_file, sep="\t", header=T) #annot$Location has location information,
+ summary(annot$Location)
+ print(adonis(mydist ~ Location, data=annot, permutations=9999))
+ pairwise.perm.manova(mydist, annot$Location, p.method = "BY", nperm = 9999)
+ 
+ annot_file="metadata_180810_310_oalg_islands.txt" #Elba vs. Mallorca labels are added in $Island
+ annot <- read.table(file=annot_file, sep="\t", header=T) #annot$Island 
+ print(adonis(mydist ~ Island, data=annot, permutations=9999))
+
+#below analyses are not appropriate as hap-group distribution is biased by locations.
+# print(adonis(mydist ~ Haplotype_group, data=annot)) #Perform PERMANOVA on ngsDist matrix using Haplo-group as a grouping term.
+# pairwise.perm.manova(mydist, annot$Haplotype_group, p.method = "BY")
+# print(adonis(mydist ~ Haplotype_group, strata = annot$Location, data=annot)) #Incorrect as sites do not contain the same haplo mix.
+# print(adonis(mydist ~ Location * Haplotype_group, data=annot)) #2way-PERMANOVA; Incorrect as sites do not contain the same haplo mix.
+```

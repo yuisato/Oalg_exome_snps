@@ -1,0 +1,113 @@
+#!/bin/bash
+#$ -cwd
+#$ -j y
+#$ -pe smp 4
+#$ -R y
+#$ -S /bin/bash
+#$ -N phyloflash
+#$ -q main.q@@intelhosts
+
+#phyloflash_covstats.qsub located in bin/
+#This script takes paried end read files of a specified sample from a specified folder and outputs phyloflash results in a specified folder.
+#Using coverage stats on the final phyloflash contigs, SSU relative abundance are summarised and reported.
+
+sample=$1 #OalgSANT_01 etc.
+indir=$2 #data/ etc.
+outdir=$3 #results/00_phyloflash/ etc.
+pdir=$(pwd)
+
+echo "job started: ID:$JOB_ID  processing $sample"
+hostname
+date
+echo
+
+#Ensure /scratch is not full.
+dir="/scratch"
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+echo "copying data..."
+mkdir -p /scratch/tmp.$JOB_ID/${sample}_phyloflash
+cd /scratch/tmp.$JOB_ID/${sample}_phyloflash
+
+cp $indir/${sample}*R1.fq.gz ${sample}_R1.fq.gz   #Input read fie name has to match this (e.g. sample_name_R1.fq.gz)
+cp $indir/${sample}*R2.fq.gz ${sample}_R2.fq.gz
+ls -l *
+
+echo
+readlen=$(zcat ${sample}_R1.fq.gz| head -n2| tail -n1|wc -c) #read length checked
+echo "Read length is $readlen."
+echo
+echo "start PhyloFlash"
+phyloFlash.pl -lib $sample\
+ -read1 ${sample}_R1.fq.gz -read2 ${sample}_R2.fq.gz \
+ -readlength $readlen -CPUs $NSLOTS -id 63 -treemap -emirge
+echo "Phyloflash finished"
+echo
+echo "calculating coverage of phlyoflash contigs..."
+for method in spades emirge; do
+ reffile=$(ls $sample.$method*final.fasta); echo "mapping reference file is $reffile."
+ bbmap.sh in=$sample.${sample}_R1.fq.gz.SSU.1.fq in2=$sample.${sample}_R1.fq.gz.SSU.2.fq\
+     nodisk ow t=$NSLOTS covstats=$sample.$method.covstats ref=$reffile perfectmode
+ echo
+done
+cp $sample.spades.covstats $sample.tmp.covstats
+tail -n+2 $sample.emirge.covstats >> $sample.tmp.covstats
+(head -n1 $sample.tmp.covstats && tail -n+2 $sample.tmp.covstats | sort -k1) > $sample.covstats
+echo "$sample.covstats"; cat $sample.covstats; echo
+
+echo "annotating the covstats table"
+grep "$sample.PF" $sample.phyloFlash | cut -f 1,4,6,7,8 | sort -k1 | cut -f2 > tmp.1a #dbHit
+grep "$sample.PF" $sample.phyloFlash | cut -f 1,4,6,7,8 | sort -k1 | cut -f3 > tmp.1b #ID_perc
+grep "$sample.PF" $sample.phyloFlash | cut -f 1,4,6,7,8 | sort -k1 | cut -f4 > tmp.1c #alnlen
+grep "$sample.PF" $sample.phyloFlash | cut -f 1,4,6,7,8 | sort -k1 | cut -f5 > tmp.1d #evalue
+grep "$sample.PF" $sample.phyloFlash | cut -f 1,4,6,7,8 | sort -k1 | cut -f1 > tmp.1e #OTU
+paste tmp.1a tmp.1b tmp.1c tmp.1d tmp.1e > tmp.1 #dbHit ID_perc alnlen evalue OTU('seq') 
+
+echo '#SampleID' > tmp.3
+echo '#Coverage' > tmp.4
+echo '#seqID' > tmp.5
+echo '#hitDB' > tmp.6
+echo '#ID_perc' > tmp.7
+echo '#alnlen' > tmp.8
+
+for seq in $(cat tmp.1 | cut -f5); do
+ hit=$(egrep "${seq}$" tmp.1 | cut -f1)
+ ID_perc=$(egrep "${seq}$" tmp.1 | cut -f2)
+ alnlen=$(egrep "${seq}$" tmp.1 | cut -f3)
+ cover=$(grep "${seq}_" $sample.covstats | cut -f 2)
+ seqID=$(grep "${seq}_" $sample.covstats | cut -f 1)
+ echo $sample >> tmp.3
+ echo $cover >> tmp.4
+ echo $seqID >> tmp.5
+ echo $hit >> tmp.6
+ echo $ID_perc >> tmp.7
+ echo $alnlen >> tmp.8
+done
+echo
+paste tmp.3 tmp.4 tmp.5 tmp.6 tmp.7 tmp.8 > tmp.f #SampleID Cov seqID hitDB ID_perc alnlen
+(head tmp.f -n1 && tail tmp.f -n+2 | sort -k2) > $sample.all.coverage_summary.txt
+echo "$sample.all.coverage_summary.txt"; cat $sample.all.coverage_summary.txt; echo
+echo
+echo "phyloflash finished"
+date
+
+ls -l *
+echo
+cd /scratch/tmp.$JOB_ID
+
+echo "Moving results to..."
+echo "$outdir/phyloflash/$sample"
+mkdir -p $outdir/phyloflash/$sample $outdir/pf_log
+mv ${sample}_phyloflash/*phyloFlash ${sample}_phyloflash/*.coverage_summary.txt\
+   ${sample}_phyloflash/*html $outdir/phyloflash/$sample
+rm -r /scratch/tmp.$JOB_ID/*
+echo
+echo "job finished: "
+date
+
+mv $pdir/$JOB_NAME.o$JOB_ID $outdir/pf_log/$sample.qsub.log

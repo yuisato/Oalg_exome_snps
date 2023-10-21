@@ -1,0 +1,298 @@
+#!/bin/bash
+#$ -N sfs_fst_pbs
+#$ -cwd
+#$ -j y
+#$ -pe smp 32
+#$ -R y
+#$ -S /bin/bash
+#$ -l h_vmem=100G,virtual_free=100G
+#$ -q main.q@@intelhosts
+
+#sfs_3pop_fst_pbs_region_snp.qsub located in bin
+#This script makes ANGSD-saf files (.gz & .idx) and calculate SFS, 2D-SFS, FST, PBS between 3 populations, using realSFS.
+#SAF files are unfolded and generatd here with ANGSD -doSaf 1. (individual inbreed coefficient was all 0 in HMM-ngsF).
+#Accordingly, -setMinDepth and -setMaxDepthInd are switched off. -setMaxDepth was set as 10X sample number.
+#GL=2 (GATK method, instead of SAMtools (1)) is used. -minInd 50% filter is on.
+#Region filter file is applied to limit reference sequences to SNP-sites previously identified in the -rf file.
+
+pdir=$(pwd)
+reffile=$1 #Oalg_verB3 etc.
+pop1=$2 #MAGL_R20 etc.
+pop2=$3 #CLDF_R20 etc.
+pop3=$4 #CAVL_R20 etc.
+outdir=$5 #results/17_sfs_fst_pbs etc.
+bamdir=$6 #results/10b-11_indel_angsd_depth/180810_310_Oalg etc.
+sampleinfo1=$7 #data/sample_info_180312_MAGL_R20.list etc.
+sampleinfo2=$8 #data/sample_info_180312_CLDF_R20.list etc.
+sampleinfo3=$9 #data/sample_info_180312_CAVL_R20.list etc.
+minind1=$(cat $sampleinfo1 | wc -l | awk '{print int($1/2+0.5)}')   #10 etc. 50% of sample number, rounded up integral
+minind2=$(cat $sampleinfo2 | wc -l | awk '{print int($1/2+0.5)}')   #10 etc. 50% of sample number, rounded up integral
+minind3=$(cat $sampleinfo3 | wc -l | awk '{print int($1/2+0.5)}')   #10 etc. 50% of sample number, rounded up integral
+maxdepth1=$(cat $sampleinfo1 | wc -l | awk '{print $1*10}') #200 etc. 10X of sample number.
+maxdepth2=$(cat $sampleinfo2 | wc -l | awk '{print $1*10}') #200 etc. 10X of sample number.
+maxdepth3=$(cat $sampleinfo3 | wc -l | awk '{print $1*10}') #200 etc. 10X of sample number.
+                                                          #Upper limit of depth range for ANGSD to exclude reads from repeat regions but accommodate stochasticity.
+regions=data/ref/Oalg_verC3_snps_210210.rf.txt
+ # This file is a region filter file intended to use for ANGSD.
+ # Each line contains a SNP position, incicated as "contig:position".
+ # Extracted from a base file:  results/15_ngs_admix_region/180810_310_Oalg/Oalg_verC3/310Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1.hwe.gz
+ # EXAMPLE
+  # TRINITY_DN10004_c0_g1_i2:26
+  # TRINITY_DN10004_c0_g1_i2:30
+  # TRINITY_DN10004_c0_g1_i2:96
+  # TRINITY_DN10004_c0_g1_i2:120
+  # TRINITY_DN10004_c0_g1_i2:138
+  # ....
+ # These SNPs were identified with ANGSD v0.929 using Oalg_verC3 reference with a region filter on 310 O.algarvenssis samples.
+ # See data/ref/Oalg_verC3_snps_210210.rf.README.txt for details.
+
+echo "job ID: $JOB_ID started"
+hostname
+date
+echo
+
+#Ensure /scratch is not full.
+dir="/scratch"
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir -p /scratch/$USER/tmp.$JOB_ID
+cd /scratch/$USER/tmp.$JOB_ID
+
+echo "copying reference file $reffile"
+cp data/ref/$(echo $reffile | sed 's/Oalg/Oalg_transcripts/')*_hits.fasta $reffile.fasta
+echo
+
+echo "copying realingned bam and index files, unzipping them, and making a list of samples included"
+echo "Population: $pop1"; mkdir $pop1
+echo "Source: $bamdir/$reffile"
+for sample in $(cat $sampleinfo1 | cut -f1); do
+ echo $sample
+ cp $bamdir/$reffile/$sample*bam.gz $pop1/.
+done
+unpigz $pop1/*bam.gz
+for sample in $(cat $sampleinfo1 | cut -f1); do
+ cp $bamdir/$reffile/$sample*bai.gz $pop1/.
+done
+unpigz $pop1/*bai.gz
+ls $pop1/*realigned.bam > bam_list1.txt
+n_ind1=$(cat bam_list1.txt | wc -l)          #Count the number of individual samples
+echo
+#
+echo "Population: $pop2"; mkdir $pop2
+echo "Source: $bamdir/$reffile"
+for sample in $(cat $sampleinfo2 | cut -f1); do
+ echo $sample
+ cp $bamdir/$reffile/$sample*bam.gz $pop2/.
+done
+unpigz $pop2/*bam.gz
+for sample in $(cat $sampleinfo2 | cut -f1); do
+ cp $bamdir/$reffile/$sample*bai.gz $pop2/.
+done
+unpigz $pop2/*bai.gz
+ls $pop2/*realigned.bam > bam_list2.txt
+n_ind2=$(cat bam_list2.txt | wc -l)          #Count the number of individual samples
+echo
+#
+echo "Population: $pop3"; mkdir $pop3
+echo "Source: $bamdir/$reffile"
+for sample in $(cat $sampleinfo3 | cut -f1); do
+ echo $sample
+ cp $bamdir/$reffile/$sample*bam.gz $pop3/.
+done
+unpigz $pop3/*bam.gz
+for sample in $(cat $sampleinfo3 | cut -f1); do
+ cp $bamdir/$reffile/$sample*bai.gz $pop3/.
+done
+unpigz $pop3/*bai.gz
+ls $pop3/*realigned.bam > bam_list3.txt
+n_ind3=$(cat bam_list3.txt | wc -l)          #Count the number of individual samples
+echo "done"
+echo
+ls -l *
+echo
+
+echo "Calculating SAF (site allele frequency) for $pop1 for unfold SFS"
+samtools faidx $reffile.fasta
+angsd-0.929 -P $NSLOTS -b bam_list1.txt -ref $reffile.fasta -anc $reffile.fasta\
+ -out ${pop1}_${n_ind1}samples_to_${reffile} -rf $regions\
+ -GL 2 -doCounts 1 -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 \
+ -setMaxDepth $maxdepth1 -minInd $minind1 -minQ 2\
+ -doSaf 1 -underFlowProtect 1
+  #-doSaf 2 -indF to incorporated HMM-indF coefficient was not used as it was all 0. it requires doMAF and doMajorminor.
+  #-underFlowProtect 1: For large data sets (large number of individuals) underflow projection is needed.
+echo "SAF for $pop1 complete"
+date
+rm -rf $pop1
+echo
+
+echo "Calculating SAF (site allele frequency) for $pop2 for unfold SFS"
+samtools faidx $reffile.fasta
+angsd-0.929 -P $NSLOTS -b bam_list2.txt -ref $reffile.fasta -anc $reffile.fasta\
+ -out ${pop2}_${n_ind2}samples_to_${reffile} -rf $regions\
+ -GL 2 -doCounts 1 -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 \
+ -setMaxDepth $maxdepth2 -minInd $minind2 -minQ 2\
+ -doSaf 1 -underFlowProtect 1
+  #-doSaf 2 -indF to incorporated HMM-indF coefficient could not be used as it requires MAF and major-minor.
+  #-underFlowProtect 1: For large data sets (large number of individuals) underflow projection is needed.
+echo "SAF for $pop2 complete"
+date
+rm -rf $pop2
+echo
+
+echo "Calculating SAF (site allele frequency) for $pop3 for unfold SFS"
+samtools faidx $reffile.fasta
+angsd-0.929 -P $NSLOTS -b bam_list3.txt -ref $reffile.fasta -anc $reffile.fasta\
+ -out ${pop3}_${n_ind3}samples_to_${reffile} -rf $regions\
+ -GL 2 -doCounts 1 -remove_bads 0 -uniqueOnly 0 -only_proper_pairs 0 \
+ -setMaxDepth $maxdepth3 -minInd $minind3 -minQ 2\
+ -doSaf 1 -underFlowProtect 1
+  #-doSaf 2 -indF to incorporated HMM-indF coefficient could not be used as it requires MAF and major-minor.
+  #-underFlowProtect 1: For large data sets (large number of individuals) underflow projection is needed.
+echo "SAF for $pop3 complete"
+date
+rm -rf $pop3; echo
+ls -l *
+echo
+
+echo "SFS estimation"
+realSFS ${pop1}_${n_ind1}samples_to_${reffile}.saf.idx -P $NSLOTS 2> /dev/null > ${pop1}_to_${reffile}.sfs
+realSFS ${pop2}_${n_ind2}samples_to_${reffile}.saf.idx -P $NSLOTS 2> /dev/null > ${pop2}_to_${reffile}.sfs
+realSFS ${pop3}_${n_ind3}samples_to_${reffile}.saf.idx -P $NSLOTS 2> /dev/null > ${pop3}_to_${reffile}.sfs
+echo "done"
+for file in *sfs; do echo $file; cat $file; done
+echo
+
+echo "plotting folded SFS for the 3 populations separately"
+for pop in $pop1 $pop2 $pop3; do
+  Rscript YOURTOOLS/ngsTools/Scripts/plotSFS.R ${pop}_to_${reffile}.sfs $pop 1 $pop.sfs-folded.pdf
+done
+
+echo "plotting unfolded (polarized) SFS for the 3 populations"
+for pop in $pop1 $pop2 $pop3; do
+  Rscript YOURTOOLS/ngsTools/Scripts/plotSFS.R ${pop}_to_${reffile}.sfs $pop 0 $pop.sfs-ploarized.pdf
+done
+echo "done" ; ls -l *pdf; echo
+
+
+echo "Joint (2D) unfolded SFS estimation"
+echo " processing $pop1 x $pop2..."
+realSFS -P $NSLOTS  ${pop1}_${n_ind1}samples_to_${reffile}.saf.idx ${pop2}_${n_ind2}samples_to_${reffile}.saf.idx\
+  2> /dev/null > $pop1.${pop2}_to_${reffile}.2dsfs
+echo " processing $pop1 x $pop3..."
+realSFS -P $NSLOTS  ${pop1}_${n_ind1}samples_to_${reffile}.saf.idx ${pop3}_${n_ind3}samples_to_${reffile}.saf.idx\
+  2> /dev/null > $pop1.${pop3}_to_${reffile}.2dsfs
+echo " processing $pop2 x $pop3..."
+realSFS -P $NSLOTS  ${pop2}_${n_ind2}samples_to_${reffile}.saf.idx ${pop3}_${n_ind3}samples_to_${reffile}.saf.idx\
+  2> /dev/null > $pop2.${pop3}_to_${reffile}.2dsfs
+echo "done"; ls -l *2dsfs; echo
+echo
+echo
+
+echo "FST estimation for 2 populations (indexing)"
+echo "Populations are 0;$pop1 x 1;$pop2"
+realSFS fst index ${pop1}_${n_ind1}samples_to_${reffile}.saf.idx ${pop2}_${n_ind2}samples_to_${reffile}.saf.idx\
+ -sfs $pop1.${pop2}_to_${reffile}.2dsfs\
+ -fstout $pop1.${pop2}_to_${reffile}\
+ -whichFST 1 -P $NSLOTS 2> /dev/null
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+echo "done"; ls -l $pop1.${pop2}_to_${reffile}*; echo
+echo "FST calculation site by site (raw-format; fst = (a)/(a+b) ), and global FST sum(A)/sum(a+b) estimation."
+realSFS fst print $pop1.${pop2}_to_${reffile}.fst.idx -whichFST 1 -P $NSLOTS 2> /dev/null > tmp
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+awk 'FNR==NR{sum0a+=$3; sum0ab+=$4} END {printf "%.6f\t\n", sum0a/sum0ab}' tmp tmp \
+ > $pop1.${pop2}_to_${reffile}.region.fst.txt
+echo "global FST: $pop1 x $pop2"
+cat $pop1.${pop2}_to_${reffile}.region.fst.txt
+echo
+echo
+
+echo "Populations are 0;$pop1 x 2;$pop3"
+realSFS fst index ${pop1}_${n_ind1}samples_to_${reffile}.saf.idx ${pop3}_${n_ind3}samples_to_${reffile}.saf.idx\
+ -sfs $pop1.${pop3}_to_${reffile}.2dsfs\
+ -fstout $pop1.${pop3}_to_${reffile}\
+ -whichFST 1 -P $NSLOTS 2> /dev/null
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+echo "done"; ls -l $pop1.${pop3}_to_${reffile}*; echo
+echo "FST calculation site by site (raw-format; fst = (a)/(a+b) ), and global FST sum(A)/sum(a+b) estimation."
+realSFS fst print $pop1.${pop3}_to_${reffile}.fst.idx -whichFST 1 -P $NSLOTS 2> /dev/null > tmp
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+awk 'FNR==NR{sum0a+=$3; sum0ab+=$4} END {printf "%.6f\t\n", sum0a/sum0ab}' tmp tmp \
+ > $pop1.${pop3}_to_${reffile}.region.fst.txt
+echo "global FST: $pop1 x $pop3"
+cat $pop1.${pop3}_to_${reffile}.region.fst.txt
+echo
+echo
+
+echo "Populations are 1;$pop2 x 2;$pop3"
+realSFS fst index ${pop2}_${n_ind2}samples_to_${reffile}.saf.idx ${pop3}_${n_ind3}samples_to_${reffile}.saf.idx\
+ -sfs $pop2.${pop3}_to_${reffile}.2dsfs\
+ -fstout $pop2.${pop3}_to_${reffile} \
+ -whichFST 1 -P $NSLOTS 2> /dev/null
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+echo "done"; ls -l $pop2.${pop3}_to_${reffile}*; echo
+echo "FST calculation site by site (raw-format; fst = (a)/(a+b) ), and global FST sum(A)/sum(a+b) estimation."
+realSFS fst print $pop2.${pop3}_to_${reffile}.fst.idx -whichFST 1 -P $NSLOTS 2> /dev/null > tmp
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+awk 'FNR==NR{sum0a+=$3; sum0ab+=$4} END {printf "%.6f\t\n", sum0a/sum0ab}' tmp tmp \
+ > $pop2.${pop3}_to_${reffile}.region.fst.txt
+echo "global FST: $pop2 x $pop3"
+cat $pop2.${pop3}_to_${reffile}.region.fst.txt
+echo
+echo
+
+echo "FST estimation for 3 populations (indexing)"
+echo "Populations are labeled as:"
+echo " 0; $pop1"
+echo " 1; $pop2"
+echo " 2; $pop3"
+echo " sfs order; 0-1, 0-2, 1-2"
+realSFS fst index ${pop1}_${n_ind1}samples_to_${reffile}.saf.idx\
+                  ${pop2}_${n_ind2}samples_to_${reffile}.saf.idx\
+                  ${pop3}_${n_ind3}samples_to_${reffile}.saf.idx\
+ -sfs $pop1.${pop2}_to_${reffile}.2dsfs\
+ -sfs $pop1.${pop3}_to_${reffile}.2dsfs\
+ -sfs $pop2.${pop3}_to_${reffile}.2dsfs\
+ -fstout $pop1.${pop2}.${pop3}_to_${reffile}.pbs \
+ -whichFST 1 -P $NSLOTS 2> /dev/null
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+echo "done"; ls -l $pop1.${pop2}.${pop3}_to_${reffile}.pbs*; echo
+
+echo "FST calculation site by site (raw-format; fst = (a)/(a+b) ), and global FST sum(A)/sum(a+b) estimation."
+realSFS fst print $pop1.${pop2}.${pop3}_to_${reffile}.pbs.fst.idx -whichFST 1 -P $NSLOTS 2> /dev/null > tmp
+  #-whichFST 1 : Use the Bhatia 2013 method of Fst calculation
+echo "region FST: $pop1 x $pop2,  $pop1 x $pop3,  $pop2 x $pop3"
+awk 'FNR==NR{sum0a+=$3; sum0ab+=$4; sum1a+=$5; sum1ab+=$6; sum2a+=$7; sum2ab+=$8} END\
+ {printf "%.6f\t%.6f\t%.6f\t\n", sum0a/sum0ab, sum1a/sum1ab, sum2a/sum2ab}' tmp tmp \
+   > $pop1.${pop2}.${pop3}_to_${reffile}.region.fst.txt
+ cat $pop1.${pop2}.${pop3}_to_${reffile}.region.fst.txt
+echo "($pop1.${pop2}.${pop3}_to_${reffile}.region.fst.txt)"
+echo
+mv tmp $pop1.${pop2}.${pop3}_to_${reffile}.raw-a,a+b.fst.txt
+echo "Raw FST file in (a), (a+b) format in <chr,pos,a0,a+b0,a1,a+b1,a2,a+b2> order"
+head $pop1.${pop2}.${pop3}_to_${reffile}.raw-a,a+b.fst.txt | column -t
+echo "........"
+echo "($pop1.${pop2}.${pop3}_to_${reffile}.raw-a,a+b.fst.txt)"; echo
+gzip $pop1.${pop2}.${pop3}_to_${reffile}.raw-a,a+b.fst.txt
+echo "all processes done."
+date
+echo
+
+
+rm *.saf.gz *.saf.idx *.saf.pos.gz bam_list?.txt $reffile.fasta $reffile.fasta.fai
+ls -l *
+echo
+echo "moving result to:"
+echo " $outdir/$reffile"
+mkdir -p $outdir/$reffile
+mv * $outdir/$reffile
+echo
+rm -r /scratch/$USER/tmp.$JOB_ID
+echo "job ID: $JOB_ID finished."
+date
+sleep 30
+mv $pdir/$JOB_NAME.o$JOB_ID $outdir/$reffile/${pop1}.${pop2}.${pop3}_to_${reffile}_sfs_fst_pbs.qsub_log

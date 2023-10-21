@@ -1,0 +1,48 @@
+#!/bin/bash
+#$ -N fastqc
+#$ -cwd
+#$ -j y
+#$ -pe smp 2
+#$ -R y
+#$ -S /bin/bash
+#$ -q main.q@@intelhosts
+
+#This script performs FastQC
+
+infile=$1 #data/*.fq.gz etc.
+outdir=$2 #results/01_fastqc/ etc.
+pdir=$(pwd)
+
+echo "job ID: $JOB_ID started"
+hostname
+date
+echo $1
+echo
+
+#Ensure /scratch is not full.
+dir="/scratch"   
+reqSpace=10     #in GByte
+availSpace=$(df -BG "${dir}" | awk 'NR==2 { print $4+0 }')
+if (( availSpace < reqSpace )); then
+  echo "not enough Space" >&2
+  exit 1
+fi
+
+mkdir -p /scratch/tmp.$JOB_ID
+cd /scratch/tmp.$JOB_ID
+cp $infile . #file copy to scratch
+echo "file copied"
+echo
+
+echo "FastQC processing"
+echo
+fastqc --threads $NSLOTS $(basename $infile)
+
+echo "moving result"
+mkdir -p $outdir
+mv *fastqc.zip *fastqc.html $outdir
+rm -r /scratch/tmp.$JOB_ID/*
+
+echo "job ID: $JOB_ID finished."
+date
+rm $pdir/$JOB_NAME.o$JOB_ID

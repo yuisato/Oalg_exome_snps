@@ -1,0 +1,51 @@
+
+```{r}
+### Plotting of admixture proportions calculated with ngsAdmix.
+
+#packages
+library(ggplot2)
+
+#Setting the working directory
+setwd("results/15_ngs_admix_region")
+
+cbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#DC7DFF", "#E85858", "#8B23F9", "#939393", "#4C7F5E", "#00DF32", "#A00000", "#8AFFEE", "#CCB2ED", "#E0E0E0", "#FFFFFF")
+
+admix_plot <- function(pop_file, mytitle, input_file) {
+ pdf(file = paste(mytitle,".pdf", sep=""), height=4)
+  pop<-read.table(pop_file,as.is=T)
+  admix <- t(as.matrix(read.table(file = input_file, sep=" ", header = F)))
+  admix<-admix[,order(pop[,1])]
+  pop<-pop[order(pop[,1]),]
+  K <- nrow(admix)
+  h<-barplot(admix, col=cbPalette[1:K], space=0, border=NA, main=mytitle, cex.main=0.8, xlab="Individuals", ylab="Admixture")
+  text(tapply(1:nrow(pop),pop[,1],mean),-0.05,unique(pop[,1]), xpd=T, cex=0.4, srt=90, adj=1)
+ dev.off()
+}
+
+#"pop_file" has 'population label' {white-space} 'sampleID';
+#LWK LWK_1
+#LWK LWK_2
+#LWK LWK_3
+#PLK PLK_1 ...
+```
+
+```{r}
+#admix_plot <- function(folder, pop_file, mytitle, input_file)
+
+#210820: Final FINAL Oalg data set (ANGSD v0.929, GL2, region-filter)
+#Result files are in 05_exome_SNPs_Oalg_180115/results/15_ngs_admix_region/SET/*
+#label files are placed in the working folder.
+  #EXAMPLE "pop_info_180810_286_oalg_elba.list"
+  #06CAVL OalgCAVL_A11
+  #06CAVL OalgCAVL_A12
+  #06CAVL OalgCAVL_A13
+  #...
+
+for (K in 2:18){
+admix_plot("pop_info_180810_310_oalg.list",paste("Admix (310 worms; C3, prior1, minMAF0.01, ind0.5, GL2, RF; K=",K,")", sep=""),paste("180810_310_Oalg/310Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1_K",K,".qopt", sep=""))
+}
+for (K in 2:18){
+admix_plot("pop_info_180810_286_oalg_elba.list",paste("Admix (286 worms; C3, prior1, minMAF0.01, ind0.5, GL2, RF; K=",K,")", sep=""),paste("180810_286_Oalg_Elba/286Samples_to_Oalg_verC3_MinQ20_SNPpval1e-3_Prior1_K",K,".qopt", sep=""))
+}
+
+```
