@@ -6,8 +6,8 @@ This is the final set of transcriptomic reference made of 17242 contigs used for
 Reference transcripts were filtered with coverages (0 < mean-coverage < 10, all samples are not coverage>4 at the same time, appear in all locations; see below).
 
 Original transcriptome ammsenbly containing 20229 contigs is;
- 01_transcript_Olavius/results/13_isoform_2018/Oalg_transcripts_verC3_Bilateria_nr-megan_hits.fasta
- 01_transcript_Olavius/results/Final_reference_transcriptomes/Oalg_transcripts_verC3_Bilateria_nr-megan_hits.fasta
+ 1_transcript_Olavius/results/13_isoform_2018/Oalg_transcripts_verC3_Bilateria_nr-megan_hits.fasta
+ 1_transcript_Olavius/results/Final_reference_transcriptomes/Oalg_transcripts_verC3_Bilateria_nr-megan_hits.fasta
 
 The original transcriptome was assessed to exclude any contigs that always show high coverage in metagenoems (=repeats/paralogs) or no coverage.
 This assessment was done with qualimap v2.2.1 (locally, default setting) on 30 representative BAM files from; 
